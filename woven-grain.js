@@ -11,6 +11,86 @@
 const outputCanvas = document.getElementById('outputCanvas');
 const ctx = outputCanvas.getContext('2d');
 const canvasHint = document.getElementById('canvasHint');
+// ── WOVEN GENERATION ANIMATION ──────────────────────────────────────────────
+// The animation is a real progressive render of the existing weave engine:
+// INPUT → CUT → ALIGN → WEAVE → FORM → LIGHT → FINAL.
+// It does not fake motion by zooming the finished image. The weave itself is
+// revealed cell-by-cell while relief and lighting build in over the same pass.
+let animationMode = false;
+let animationProgress = 1;
+let animationFrame = null;
+let animationStart = 0;
+const ANIMATION_DURATION = 6200;
+const animateBtn = document.getElementById('animateBtn');
+const animationStage = document.getElementById('animationStage');
+const animationStageLabel = document.getElementById('animationStageLabel');
+const animationStageProgress = document.getElementById('animationStageProgress');
+
+function animationState(p) {
+  if (p < 0.10) return { name: 'INPUT', reveal: 0, depth: 0, light: 0, opacity: p / 0.10 };
+  if (p < 0.22) return { name: 'CUT', reveal: (p - 0.10) / 0.12 * 0.12, depth: 0, light: 0, opacity: 1 };
+  if (p < 0.60) return { name: 'WEAVE', reveal: 0.12 + (p - 0.22) / 0.38 * 0.88, depth: 0, light: 0, opacity: 1 };
+  if (p < 0.78) return { name: 'FORM', reveal: 1, depth: (p - 0.60) / 0.18, light: 0, opacity: 1 };
+  if (p < 0.94) return { name: 'LIGHT', reveal: 1, depth: 1, light: (p - 0.78) / 0.16, opacity: 1 };
+  return { name: 'FINAL', reveal: 1, depth: 1, light: 1, opacity: 1 };
+}
+
+function getAnimationCellProgress(row, col, totalRows, totalCols) {
+  // Stable serpentine reveal so the weave grows like a material being woven,
+  // rather than simply drawing one diagonal scanline across the photograph.
+  const rr = Math.max(0, row);
+  const cc = Math.max(0, col);
+  const index = (rr % 2 === 0) ? cc : (totalCols - 1 - cc);
+  return (rr * totalCols + index) / Math.max(1, totalRows * totalCols - 1);
+}
+
+function animationRevealAllows(row, col, totalRows, totalCols) {
+  if (!animationMode) return true;
+  const st = animationState(animationProgress);
+  return st.reveal >= 0.999 || getAnimationCellProgress(row, col, totalRows, totalCols) <= st.reveal;
+}
+
+function startWeaveAnimation() {
+  if (!hasA || !hasB || animationMode) return;
+  animationMode = true;
+  animationProgress = 0;
+  animationStart = performance.now();
+  animateBtn.textContent = 'PLAYING…';
+  animateBtn.disabled = true;
+  animationStage.style.display = 'block';
+  if (animationFrame) cancelAnimationFrame(animationFrame);
+
+  function tick(now) {
+    const elapsed = now - animationStart;
+    animationProgress = Math.min(1, elapsed / ANIMATION_DURATION);
+    const st = animationState(animationProgress);
+    animationStageLabel.textContent = st.name;
+    animationStageProgress.textContent = Math.round(animationProgress * 100) + '%';
+    render();
+    if (animationProgress < 1) {
+      animationFrame = requestAnimationFrame(tick);
+    } else {
+      animationMode = false;
+      animationProgress = 1;
+      animationStageLabel.textContent = 'FINAL';
+      animationStageProgress.textContent = '100%';
+      animateBtn.textContent = 'PLAY WEAVE';
+      animateBtn.disabled = !(hasA && hasB);
+      render();
+    }
+  }
+  animationFrame = requestAnimationFrame(tick);
+}
+
+function stopWeaveAnimation() {
+  if (animationFrame) cancelAnimationFrame(animationFrame);
+  animationFrame = null;
+  animationMode = false;
+  animationProgress = 1;
+  animationStage.style.display = 'none';
+  animateBtn.textContent = 'PLAY WEAVE';
+  animateBtn.disabled = !(hasA && hasB);
+}
 
 // THEME SWITCH: matches the series convention (body.theme-xxx class swap),
 // two beige palettes only — Sarashi（晒し布×真鍮、既定）／Touki（陶器×抹茶）
@@ -82,19 +162,6 @@ const backlightToggle = document.getElementById('backlight');
 const lightIntensitySlider = document.getElementById('lightIntensity');
 const lightIntensityVal = document.getElementById('lightIntensityVal');
 
-// PRO / SURFACE 3D controls — the weave is now treated as a height field,
-// rather than a flat image with edge glow painted on top.
-const reliefSlider = document.getElementById('relief');
-const reliefVal = document.getElementById('reliefVal');
-const contactShadowSlider = document.getElementById('contactShadow');
-const contactShadowVal = document.getElementById('contactShadowVal');
-const specularSlider = document.getElementById('specular');
-const specularVal = document.getElementById('specularVal');
-const surfaceBendSlider = document.getElementById('surfaceBend');
-const surfaceBendVal = document.getElementById('surfaceBendVal');
-const profileBtns = document.querySelectorAll('[data-profile]');
-let currentProfile = 'round';
-
 const downloadBtn = document.getElementById('downloadBtn');
 const resetBtn = document.getElementById('resetBtn');
 
@@ -112,6 +179,7 @@ function wireDrop(dropId, fileId, img, onLoaded, useBackgroundImage) {
     reader.onload = (ev) => {
       img.onload = () => {
         onLoaded();
+        if (animateBtn) animateBtn.disabled = !(hasA && hasB);
         drop.classList.add('filled');
         if (useBackgroundImage) drop.style.backgroundImage = `url(${ev.target.result})`;
         render();
@@ -126,6 +194,8 @@ wireDrop('dropA', 'fileA', imgA, () => { hasA = true; }, false);
 wireDrop('dropB', 'fileB', imgB, () => { hasB = true; }, false);
 wireDrop('dropC', 'fileC', imgC, () => { hasC = true; }, true);
 
+if (animateBtn) animateBtn.addEventListener('click', startWeaveAnimation);
+
 directionBtns.forEach(btn => {
   btn.addEventListener('click', () => {
     directionBtns.forEach(b => b.classList.remove('active'));
@@ -136,15 +206,6 @@ directionBtns.forEach(btn => {
 });
 
 zoomWithMeshToggle.addEventListener('change', render);
-
-profileBtns.forEach(btn => {
-  btn.addEventListener('click', () => {
-    profileBtns.forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    currentProfile = btn.dataset.profile;
-    render();
-  });
-});
 
 function seededRandom(row, col, salt) {
   let x = Math.sin(row * 127.1 + col * 311.7 + salt * 74.7) * 43758.5453;
@@ -241,8 +302,11 @@ function render() {
   const zoomWithMesh = zoomWithMeshToggle.checked;
   const zoomFactor = zoomWithMesh ? Math.max(1, mesh / 40) : 1; // 既定はOFF：MESH SIZEを変えても写真サイズは変わらない
   const strandLength = parseInt(strandLengthSlider.value, 10);
-  const depthAmt = parseInt(depthAmtSlider.value, 10) / 100;
-  const shadowReach = parseInt(shadowReachSlider.value, 10) / 100;
+  const baseDepthAmt = parseInt(depthAmtSlider.value, 10) / 100;
+  const baseShadowReach = parseInt(shadowReachSlider.value, 10) / 100;
+  const animState = animationMode ? animationState(animationProgress) : { depth: 1, light: 1, opacity: 1, reveal: 1 };
+  const depthAmt = baseDepthAmt * animState.depth;
+  const shadowReach = baseShadowReach * (0.25 + 0.75 * animState.light);
   const lightDirectionDeg = parseInt(lightDirectionSlider.value, 10);
   // 0°=top, 90°=right, 180°=bottom, 270°=left (clockwise from top), matching the compass feel of the slider
   const lightRad = (lightDirectionDeg - 90) * Math.PI / 180;
@@ -260,6 +324,7 @@ function render() {
 
   if (backlightOn) {
     ctx.save();
+    ctx.globalAlpha = animState.opacity;
     ctx.filter = `brightness(${0.6 + lightIntensity * 1.1})`;
     drawCover(imgC, w, h);
     ctx.restore();
@@ -273,8 +338,7 @@ function render() {
 
   if (currentDirection === 'diagonal') {
     renderDiagonalWeave({ mesh, zoomFactor, strandLength, depthAmt, shadowReach, lightVec, warpAmt, imperfAmt, density, tensionFactor, tensionSizeAdjust, tensionDepthMul, filterA, filterB });
-    applyReliefLighting({ mesh, strandLength, depthAmt, lightVec, lightIntensity, relief: parseInt(reliefSlider.value, 10) / 100, contactShadow: parseInt(contactShadowSlider.value, 10) / 100, specular: parseInt(specularSlider.value, 10) / 100, surfaceBend: parseInt(surfaceBendSlider.value, 10) / 100, profile: currentProfile });
-    applyGrain(grainAmt);
+    if (!animationMode || animationProgress > 0.94) applyGrain(grainAmt);
     return;
   }
 
@@ -296,6 +360,9 @@ function render() {
     for (let gx = 0; gx < w; gx += mesh) {
       const col = Math.floor(gx / mesh);
       const row = Math.floor(gy / mesh);
+      const totalCols = Math.ceil(w / mesh);
+      const totalRows = Math.ceil(h / mesh);
+      if (!animationRevealAllows(row, col, totalRows, totalCols)) continue;
       const gRow = Math.floor(row / strandLength);
       const gCol = Math.floor(col / strandLength);
       let baseUseA = currentDirection === 'stripe' ? col % 2 === 0 : (gRow + gCol) % 2 === 0;
@@ -421,171 +488,7 @@ function render() {
     }
   }
 
-  // New Pro stage: convert the woven structure into a genuine pixel-level
-  // height field, derive normals, contact/cast shadows and specular response,
-  // then shade the already woven photograph. This is deliberately a 2.5D
-  // renderer: the source photographs remain the color/albedo, while geometry
-  // is reconstructed from the weave itself.
-  applyReliefLighting({ mesh, strandLength, depthAmt, lightVec, lightIntensity, relief: parseInt(reliefSlider.value, 10) / 100, contactShadow: parseInt(contactShadowSlider.value, 10) / 100, specular: parseInt(specularSlider.value, 10) / 100, surfaceBend: parseInt(surfaceBendSlider.value, 10) / 100, profile: currentProfile });
-
-  applyGrain(grainAmt);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PRO SURFACE RENDERER
-//
-// The important change from the original Woven Grain is here: instead of
-// painting a highlight/shadow around a flat tile, we build a small height field
-// from the actual weave pattern and light that field as if it were a shallow
-// physical surface.  The photograph is the albedo; the weave is the geometry.
-//
-// This gives us three-dimensional cues that a flat gradient cannot reproduce:
-//   1. rounded / beveled strand normals
-//   2. contact shadows where over/under strands meet
-//   3. cast shadows in the light direction
-//   4. specular response that follows the surface normal
-//   5. a slow, large-scale bend across the whole woven sheet
-// ─────────────────────────────────────────────────────────────────────────────
-function applyReliefLighting(p) {
-  const { mesh, strandLength, depthAmt, lightVec, lightIntensity, relief, contactShadow, specular, surfaceBend, profile } = p;
-  if (relief <= 0.001) return;
-
-  const w = outputCanvas.width, h = outputCanvas.height;
-  const size = w * h;
-  const height = new Float32Array(size);
-  const bend = surfaceBend * 0.20;
-  const depth = Math.max(0.05, relief * (0.45 + depthAmt * 0.9));
-  const cx = w * 0.5, cy = h * 0.5;
-  const diagonal = currentDirection === 'diagonal';
-  const ca = Math.SQRT1_2, sa = Math.SQRT1_2;
-
-  function profileShape(t) {
-    // t is -1..1 across a strand.  These are intentionally broad, material-like
-    // profiles rather than perfect CG cylinders.
-    const a = Math.max(0, Math.min(1, 1 - Math.abs(t)));
-    if (profile === 'flat') return 0.88 + a * 0.12;
-    if (profile === 'ribbon') return 0.58 + a * 0.42;
-    if (profile === 'beveled') return 0.34 + a * 0.66;
-    return Math.sqrt(Math.max(0, 1 - t * t)) * 0.78 + 0.22; // round
-  }
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let qx = x, qy = y;
-      if (diagonal) {
-        const dx = x - cx, dy = y - cy;
-        // inverse 45° rotation: screen -> weave coordinates
-        qx = dx * ca + dy * sa + cx;
-        qy = -dx * sa + dy * ca + cy;
-      }
-
-      const col = Math.floor(qx / mesh);
-      const row = Math.floor(qy / mesh);
-      const gRow = Math.floor(row / strandLength);
-      const gCol = Math.floor(col / strandLength);
-      let over;
-      if (currentDirection === 'stripe') over = (col & 1) === 0;
-      else over = ((gRow + gCol) & 1) === 0;
-
-      const groupW = currentDirection === 'stripe' ? mesh : strandLength * mesh;
-      const groupH = currentDirection === 'stripe' ? h : strandLength * mesh;
-      const ux = ((qx % groupW) + groupW) % groupW;
-      const uy = ((qy % groupH) + groupH) % groupH;
-
-      // In Basket mode, alternating cells behave as crossing strand segments.
-      // A is treated as the horizontal/over family and B as the vertical/under
-      // family; swapping their photo content does not change the physical weave.
-      const horizontal = currentDirection === 'stripe' || over;
-      const cross = horizontal ? (uy / Math.max(1, groupH)) : (ux / Math.max(1, groupW));
-      const t = cross * 2 - 1;
-      const rounded = profileShape(t);
-      const overBase = over ? 0.78 : 0.34;
-
-      // Soft surface deformation keeps the sheet from reading like a perfect
-      // computer grid.  It is intentionally much larger than IMPERFECTION.
-      const wave = Math.sin((x * 0.012) + (y * 0.007)) * 0.55 +
-                   Math.sin((x * 0.004) - (y * 0.009)) * 0.45;
-      const bendTerm = bend * wave;
-      height[y * w + x] = Math.max(0, overBase + rounded * depth * 0.55 + bendTerm * 0.18);
-    }
-  }
-
-  const src = ctx.getImageData(0, 0, w, h);
-  const d = src.data;
-  const lx = lightVec.x, ly = lightVec.y;
-  // Light is slightly elevated above the sheet. Increasing intensity also
-  // increases the height of the virtual light, keeping the effect photographic.
-  const lightZ = 0.70 + lightIntensity * 0.75;
-  const lLen = Math.hypot(lx, ly, lightZ) || 1;
-  const Lx = lx / lLen, Ly = ly / lLen, Lz = lightZ / lLen;
-  const castSteps = Math.max(2, Math.round(3 + contactShadow * 7));
-  const stepLen = Math.max(1.5, mesh * 0.13);
-
-  function H(xx, yy) {
-    xx = Math.max(0, Math.min(w - 1, xx));
-    yy = Math.max(0, Math.min(h - 1, yy));
-    return height[yy * w + xx];
-  }
-
-  // Directional, height-aware shading.  We deliberately leave the original
-  // photo color mostly intact: the geometry should be felt through light, not
-  // replaced by a grey 3D render.
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
-      const i = (y * w + x) * 4;
-      const hc = height[y * w + x];
-      const dx = (H(x + 1, y) - H(x - 1, y)) * depth * 1.65;
-      const dy = (H(x, y + 1) - H(x, y - 1)) * depth * 1.65;
-      let nx = -dx, ny = -dy, nz = 1;
-      const nl = Math.hypot(nx, ny, nz) || 1;
-      nx /= nl; ny /= nl; nz /= nl;
-
-      const diffuse = Math.max(0, nx * Lx + ny * Ly + nz * Lz);
-
-      // Ambient occlusion / contact darkening: concave areas and the low side
-      // of an over/under crossing get darker without needing a texture mask.
-      const lap = H(x - 1, y) + H(x + 1, y) + H(x, y - 1) + H(x, y + 1) - hc * 4;
-      const concave = Math.max(0, -lap * 2.8);
-      const contact = Math.max(0, 0.52 - hc) * contactShadow;
-
-      // Cheap but effective cast-shadow march toward the light. A taller point
-      // between the current point and the light blocks part of the illumination.
-      let blocked = 0;
-      for (let s = 1; s <= castSteps; s++) {
-        const sx = Math.round(x - Lx * stepLen * s);
-        const sy = Math.round(y - Ly * stepLen * s);
-        const hs = H(sx, sy);
-        const expected = hc + (s * stepLen * Lz * 0.22);
-        if (hs > expected + 0.025) {
-          blocked += 1 / castSteps;
-        }
-      }
-
-      // Soft highlight follows the normal, not the cell edge. This is the key
-      // visual difference from the old applyEdgeGlow approach.
-      const hx = Lx, hy = Ly, hz = Lz;
-      const viewZ = 1;
-      const halfLen = Math.hypot(hx, hy, hz + viewZ) || 1;
-      const Hx = hx / halfLen, Hy = hy / halfLen, Hz = (hz + viewZ) / halfLen;
-      const ndoth = Math.max(0, nx * Hx + ny * Hy + nz * Hz);
-      const gloss = Math.pow(ndoth, 18 + (1 - specular) * 38) * specular;
-
-      let factor = 0.78 + diffuse * 0.38;
-      factor *= 1 - Math.min(0.46, blocked * 0.42 * contactShadow);
-      factor *= 1 - Math.min(0.38, concave * 0.11 * contactShadow);
-      factor *= 1 - Math.min(0.30, contact * 0.30);
-      factor += gloss * 0.72;
-      factor = Math.max(0.30, Math.min(1.42, factor));
-
-      // A tiny warm light component makes the highlight read like photographed
-      // material rather than a neutral digital bevel.
-      const warm = Math.min(1, gloss * 0.45 + diffuse * 0.04);
-      d[i] = Math.min(255, d[i] * factor + warm * 8);
-      d[i + 1] = Math.min(255, d[i + 1] * factor + warm * 6);
-      d[i + 2] = Math.min(255, d[i + 2] * factor + warm * 3);
-    }
-  }
-  ctx.putImageData(src, 0, 0);
+  if (!animationMode || animationProgress > 0.94) applyGrain(grainAmt);
 }
 
 // Film-grain-style noise overlay — a per-pixel random luminance texture blended
@@ -723,6 +626,10 @@ function renderDiagonalWeave(p) {
   for (let row = -range; row <= range; row++) {
     for (let col = -range; col <= range; col++) {
       const u0 = row * mesh, v0 = col * mesh;
+      const animRow = row + range;
+      const animCol = col + range;
+      const totalDiag = range * 2 + 1;
+      if (!animationRevealAllows(animRow, animCol, totalDiag, totalDiag)) continue;
       const gRow = Math.floor(row / strandLength);
       const gCol = Math.floor(col / strandLength);
       let baseUseA = (gRow + gCol) % 2 === 0;
@@ -768,6 +675,10 @@ function renderDiagonalWeave(p) {
   for (let row = -range; row <= range; row++) {
     for (let col = -range; col <= range; col++) {
       const u0 = row * mesh, v0 = col * mesh;
+      const animRow = row + range;
+      const animCol = col + range;
+      const totalDiag = range * 2 + 1;
+      if (!animationRevealAllows(animRow, animCol, totalDiag, totalDiag)) continue;
       // STRAND LENGTH groups neighboring diamonds into the same continuous segment,
       // same rationale as basket/stripe below
       const gRow = Math.floor(row / strandLength);
@@ -857,7 +768,6 @@ function renderDiagonalWeave(p) {
 }
 
 [meshSlider, strandLengthSlider, warpSlider, imperfectionSlider, densitySlider, tensionSlider, depthAmtSlider, shadowReachSlider, lightDirectionSlider, grainSlider, lightIntensitySlider,
- reliefSlider, contactShadowSlider, specularSlider, surfaceBendSlider,
  exposureASlider, brillianceASlider, exposureBSlider, brillianceBSlider].forEach(el => {
   el.addEventListener('input', () => {
     meshVal.textContent = meshSlider.value;
@@ -871,10 +781,6 @@ function renderDiagonalWeave(p) {
     lightDirectionVal.textContent = lightDirectionSlider.value + '°';
     grainVal.textContent = grainSlider.value + '%';
     lightIntensityVal.textContent = lightIntensitySlider.value + '%';
-    reliefVal.textContent = reliefSlider.value + '%';
-    contactShadowVal.textContent = contactShadowSlider.value + '%';
-    specularVal.textContent = specularSlider.value + '%';
-    surfaceBendVal.textContent = surfaceBendSlider.value + '%';
     exposureAVal.textContent = exposureASlider.value;
     brillianceAVal.textContent = brillianceASlider.value;
     exposureBVal.textContent = exposureBSlider.value;
@@ -885,14 +791,11 @@ function renderDiagonalWeave(p) {
 backlightToggle.addEventListener('change', render);
 
 resetBtn.addEventListener('click', () => {
+  stopWeaveAnimation();
   meshSlider.value = 40; strandLengthSlider.value = 1; depthAmtSlider.value = 60; shadowReachSlider.value = 75; warpSlider.value = 0;
   lightDirectionSlider.value = 45; grainSlider.value = 0;
   imperfectionSlider.value = 15; densitySlider.value = 50; tensionSlider.value = 50;
   backlightToggle.checked = false; lightIntensitySlider.value = 50;
-  reliefSlider.value = 72; contactShadowSlider.value = 68; specularSlider.value = 24; surfaceBendSlider.value = 18;
-  profileBtns.forEach(b => b.classList.remove('active'));
-  document.querySelector('[data-profile="round"]').classList.add('active');
-  currentProfile = 'round';
   zoomWithMeshToggle.checked = false;
   exposureASlider.value = 0; brillianceASlider.value = 0;
   exposureBSlider.value = 0; brillianceBSlider.value = 0;
@@ -900,7 +803,6 @@ resetBtn.addEventListener('click', () => {
   document.querySelector('[data-direction="basket"]').classList.add('active');
   currentDirection = 'basket';
   [meshSlider, strandLengthSlider, warpSlider, imperfectionSlider, densitySlider, tensionSlider, depthAmtSlider, shadowReachSlider, lightDirectionSlider, grainSlider, lightIntensitySlider,
-   reliefSlider, contactShadowSlider, specularSlider, surfaceBendSlider,
    exposureASlider, brillianceASlider, exposureBSlider, brillianceBSlider]
     .forEach(el => el.dispatchEvent(new Event('input')));
   render();

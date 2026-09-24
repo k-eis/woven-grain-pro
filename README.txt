@@ -1,17 +1,15 @@
-Woven Grain Pro α
-k-eis DESIGN FILTER 007
+# Woven Grain Pro α2
 
-This prototype evolves Woven Grain from flat edge-lighting into a shallow 2.5D surface renderer.
+Current Woven Grain engine + progressive weave animation.
 
-New controls:
-- STRAND PROFILE: Round / Ribbon / Beveled / Flat
-- RELIEF: physical-looking height strength
-- CONTACT SHADOW: crossing/concave darkening and cast-shadow strength
-- SPECULAR: surface highlight response
-- SURFACE BEND: large-scale sheet deformation
+Animation sequence:
+INPUT → CUT → WEAVE → FORM → LIGHT → FINAL
 
-The original weave engine remains in place. The new stage builds a height field from the weave,
-derives surface normals, then shades the existing photographic pixels. It is intentionally a 2.5D
-renderer so it stays fast in a browser while producing stronger material/volume cues.
+The animation is not a simple zoom or playback of a finished image. It progressively reveals the existing weave cells and builds relief/lighting during the render.
 
-Open index.html in a modern browser.
+Controls:
+- PLAY WEAVE: 6.2 second generation animation
+- Existing Woven Grain controls remain active
+- The final frame is the same generated image and can be saved as PNG
+
+Open index(1).html in a modern browser.
