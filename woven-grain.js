@@ -52,6 +52,8 @@ const strandLengthSlider = document.getElementById('strandLength');
 const strandLengthVal = document.getElementById('strandLengthVal');
 const directionBtns = document.querySelectorAll('[data-direction]');
 let currentDirection = 'basket';
+const profileBtns = document.querySelectorAll('[data-profile]');
+let currentProfile = 'round';
 
 const exposureASlider = document.getElementById('exposureA');
 const exposureAVal = document.getElementById('exposureAVal');
@@ -85,6 +87,7 @@ const lightIntensityVal = document.getElementById('lightIntensityVal');
 const downloadBtn = document.getElementById('downloadBtn');
 const resetBtn = document.getElementById('resetBtn');
 const animateBtn = document.getElementById('animateBtn');
+const playOverlayBtn = document.getElementById('playOverlayBtn');
 const animationStage = document.getElementById('animationStage');
 const animationStageLabel = document.getElementById('animationStageLabel');
 const animationStageProgress = document.getElementById('animationStageProgress');
@@ -92,11 +95,16 @@ const animationStageProgress = document.getElementById('animationStageProgress')
 let animationProgress = null;
 let animationFrame = 0;
 let animationPlaying = false;
+let compositionReady = false;
 
 function updateAnimationUI() {
   const ready = hasA && hasB;
   if (animateBtn) animateBtn.disabled = !ready || animationPlaying;
-  if (downloadBtn) downloadBtn.disabled = !ready;
+  if (playOverlayBtn) {
+    playOverlayBtn.disabled = !ready || animationPlaying;
+    playOverlayBtn.style.display = compositionReady ? 'none' : 'block';
+  }
+  if (downloadBtn) downloadBtn.disabled = !ready || !compositionReady;
 }
 
 function animationStageInfo(p) {
@@ -125,6 +133,7 @@ function stopAnimation() {
   animationFrame = 0;
   animationPlaying = false;
   animationProgress = null;
+  compositionReady = false;
   if (animationStage) animationStage.style.display = 'none';
   updateAnimationUI();
   render();
@@ -136,7 +145,9 @@ function playWeaveAnimation() {
 
   animationPlaying = true;
   animationProgress = 0;
+  compositionReady = false;
   if (animationStage) animationStage.style.display = 'block';
+  if (playOverlayBtn) playOverlayBtn.style.display = 'none';
   updateAnimationUI();
 
   const start = performance.now();
@@ -156,6 +167,7 @@ function playWeaveAnimation() {
       animationFrame = 0;
       animationPlaying = false;
       animationProgress = null;
+      compositionReady = true;
       if (animationStageLabel) animationStageLabel.textContent = 'FINAL';
       if (animationStageProgress) animationStageProgress.textContent = '100%';
       updateAnimationUI();
@@ -169,6 +181,7 @@ function playWeaveAnimation() {
 }
 
 if (animateBtn) animateBtn.addEventListener('click', playWeaveAnimation);
+if (playOverlayBtn) playOverlayBtn.addEventListener('click', playWeaveAnimation);
 
 const previewA = document.getElementById('previewA');
 const previewB = document.getElementById('previewB');
@@ -194,8 +207,8 @@ function wireDrop(dropId, fileId, img, onLoaded, useBackgroundImage) {
   });
 }
 
-wireDrop('dropA', 'fileA', imgA, () => { hasA = true; updateAnimationUI(); }, false);
-wireDrop('dropB', 'fileB', imgB, () => { hasB = true; updateAnimationUI(); }, false);
+wireDrop('dropA', 'fileA', imgA, () => { hasA = true; compositionReady = false; updateAnimationUI(); }, false);
+wireDrop('dropB', 'fileB', imgB, () => { hasB = true; compositionReady = false; updateAnimationUI(); }, false);
 wireDrop('dropC', 'fileC', imgC, () => { hasC = true; }, true);
 
 directionBtns.forEach(btn => {
@@ -203,11 +216,24 @@ directionBtns.forEach(btn => {
     directionBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     currentDirection = btn.dataset.direction;
+    compositionReady = false;
+    updateAnimationUI();
     render();
   });
 });
 
-zoomWithMeshToggle.addEventListener('change', render);
+profileBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    profileBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentProfile = btn.dataset.profile;
+    compositionReady = false;
+    updateAnimationUI();
+    render();
+  });
+});
+
+zoomWithMeshToggle.addEventListener('change', () => { compositionReady = false; updateAnimationUI(); render(); });
 
 function seededRandom(row, col, salt) {
   let x = Math.sin(row * 127.1 + col * 311.7 + salt * 74.7) * 43758.5453;
@@ -294,16 +320,27 @@ function render() {
 
   if (!hasA || !hasB) {
     canvasHint.style.display = 'block';
+    if (playOverlayBtn) playOverlayBtn.style.display = 'block';
     downloadBtn.disabled = true;
+    updateAnimationUI();
+    return;
+  }
+  if (!animationPlaying && !compositionReady) {
+    canvasHint.style.display = 'none';
+    if (playOverlayBtn) playOverlayBtn.style.display = 'block';
+    downloadBtn.disabled = true;
+    updateAnimationUI();
     return;
   }
   canvasHint.style.display = 'none';
+  if (playOverlayBtn) playOverlayBtn.style.display = 'none';
   downloadBtn.disabled = false;
 
   const mesh = parseInt(meshSlider.value, 10);
   const zoomWithMesh = zoomWithMeshToggle.checked;
   const zoomFactor = zoomWithMesh ? Math.max(1, mesh / 40) : 1; // 既定はOFF：MESH SIZEを変えても写真サイズは変わらない
   const strandLength = parseInt(strandLengthSlider.value, 10);
+  const profile = currentProfile;
   const depthAmt = parseInt(depthAmtSlider.value, 10) / 100;
   const shadowReach = parseInt(shadowReachSlider.value, 10) / 100;
   const lightDirectionDeg = parseInt(lightDirectionSlider.value, 10);
@@ -330,7 +367,8 @@ function render() {
   const weaveP = ap == null ? 1 : Math.max(0, Math.min(1, (ap - 0.25) / 0.42));
   const formP = ap == null ? 1 : Math.max(0, Math.min(1, (ap - 0.67) / 0.17));
   const lightP = ap == null ? 1 : Math.max(0, Math.min(1, (ap - 0.84) / 0.12));
-  const visualDepthAmt = depthAmt * (ap == null ? 1 : formP);
+  const profileDepthMul = profile === 'round' ? 1.15 : profile === 'ribbon' ? 1.0 : profile === 'beveled' ? 1.08 : 0.72;
+  const visualDepthAmt = depthAmt * profileDepthMul * (ap == null ? 1 : formP);
   const visualLightIntensity = lightIntensity * (ap == null ? 1 : lightP);
 
   if (ap != null && ap < 0.25) {
@@ -559,7 +597,8 @@ function applyGrain(amt) {
 // lightVec is a unit vector pointing toward the light source; useA still adds a
 // small over/under bias on top of that shared directional lighting.
 function applyEdgeGlow(x, y, w, h, useA, depthAmt, shadowReach, tensionDepthMul, lightVec) {
-  const peakBase = Math.max(0, Math.min(0.5, 0.27 * depthAmt * tensionDepthMul * (useA ? 1.15 : 0.9)));
+  const profileMul = currentProfile === 'round' ? 1.0 : currentProfile === 'ribbon' ? 0.82 : currentProfile === 'beveled' ? 1.12 : 0.58;
+  const peakBase = Math.max(0, Math.min(0.5, 0.27 * depthAmt * tensionDepthMul * profileMul * (useA ? 1.15 : 0.9)));
   if (peakBase <= 0.002) return;
   const reach = Math.max(1, Math.min(w, h) * 0.5 * Math.max(0.04, shadowReach));
 
@@ -585,7 +624,8 @@ function applyEdgeGlow(x, y, w, h, useA, depthAmt, shadowReach, tensionDepthMul,
 // diamond groups in DIAGONAL mode) — walks each edge and lights/shadows it
 // based on how directly its own outward normal faces the light source.
 function applyPolygonEdgeGlow(corners, useA, depthAmt, shadowReach, tensionDepthMul, lightVec) {
-  const peakBase = Math.max(0, Math.min(0.5, 0.27 * depthAmt * tensionDepthMul * (useA ? 1.15 : 0.9)));
+  const profileMul = currentProfile === 'round' ? 1.0 : currentProfile === 'ribbon' ? 0.82 : currentProfile === 'beveled' ? 1.12 : 0.58;
+  const peakBase = Math.max(0, Math.min(0.5, 0.27 * depthAmt * tensionDepthMul * profileMul * (useA ? 1.15 : 0.9)));
   if (peakBase <= 0.002) return;
   const centroid = corners.reduce((a, c) => [a[0] + c[0] / corners.length, a[1] + c[1] / corners.length], [0, 0]);
   const edgeLen = Math.hypot(corners[1][0] - corners[0][0], corners[1][1] - corners[0][1]);
@@ -802,6 +842,8 @@ function renderDiagonalWeave(p) {
  exposureASlider, brillianceASlider, exposureBSlider, brillianceBSlider].forEach(el => {
   el.addEventListener('input', () => {
     if (animationPlaying) stopAnimation();
+    compositionReady = false;
+    updateAnimationUI();
     meshVal.textContent = meshSlider.value;
     strandLengthVal.textContent = strandLengthSlider.value;
     warpVal.textContent = warpSlider.value + '%';
@@ -820,10 +862,11 @@ function renderDiagonalWeave(p) {
     render();
   });
 });
-backlightToggle.addEventListener('change', render);
+backlightToggle.addEventListener('change', () => { compositionReady = false; updateAnimationUI(); render(); });
 
 resetBtn.addEventListener('click', () => {
   if (animationPlaying) stopAnimation();
+  compositionReady = false;
   meshSlider.value = 40; strandLengthSlider.value = 1; depthAmtSlider.value = 60; shadowReachSlider.value = 75; warpSlider.value = 0;
   lightDirectionSlider.value = 45; grainSlider.value = 0;
   imperfectionSlider.value = 15; densitySlider.value = 50; tensionSlider.value = 50;
@@ -834,6 +877,8 @@ resetBtn.addEventListener('click', () => {
   directionBtns.forEach(b => b.classList.remove('active'));
   document.querySelector('[data-direction="basket"]').classList.add('active');
   currentDirection = 'basket';
+  currentProfile = 'round';
+  profileBtns.forEach(b => b.classList.toggle('active', b.dataset.profile === 'round'));
   [meshSlider, strandLengthSlider, warpSlider, imperfectionSlider, densitySlider, tensionSlider, depthAmtSlider, shadowReachSlider, lightDirectionSlider, grainSlider, lightIntensitySlider,
    exposureASlider, brillianceASlider, exposureBSlider, brillianceBSlider]
     .forEach(el => el.dispatchEvent(new Event('input')));
@@ -869,5 +914,6 @@ window.addEventListener('resize', () => {
   resizeDebounce = setTimeout(render, 150);
 });
 
+updateAnimationUI();
 updateAnimationUI();
 render();
