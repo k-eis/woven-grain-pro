@@ -1,8 +1,8 @@
-Woven Grain Pro α4
+Woven Grain Pro α6
 
-PLAY WEAVE is the central action.
-- No composition starts automatically after Photo A/B are loaded.
-- PLAY WEAVE is centered over the output canvas.
-- Pressing PLAY WEAVE starts the progressive weave animation.
-- The final composition is available after the animation completes.
-- Changing parameters invalidates the current composition and requires PLAY WEAVE again.
+変更点:
+- PLAY WEAVE を一度最後まで再生すると、その後は通常の完成画像を表示したまま自由にパラメータ調整できます。
+- パラメータを変更しても毎回アニメーションには戻りません。
+- Photo A / Photo B を入れ直した場合は、新しい素材として再び PLAY WEAVE が必要です。
+- RESET 後も PLAY WEAVE から再スタートします。
+- PLAY WEAVE をもう一度押せば、いつでも生成アニメーションを再生できます。

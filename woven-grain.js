@@ -96,6 +96,7 @@ let animationProgress = null;
 let animationFrame = 0;
 let animationPlaying = false;
 let compositionReady = false;
+let hasAnimatedOnce = false;
 
 function updateAnimationUI() {
   const ready = hasA && hasB;
@@ -134,6 +135,7 @@ function stopAnimation() {
   animationPlaying = false;
   animationProgress = null;
   compositionReady = false;
+  hasAnimatedOnce = false;
   if (animationStage) animationStage.style.display = 'none';
   updateAnimationUI();
   render();
@@ -168,6 +170,7 @@ function playWeaveAnimation() {
       animationPlaying = false;
       animationProgress = null;
       compositionReady = true;
+      hasAnimatedOnce = true;
       if (animationStageLabel) animationStageLabel.textContent = 'FINAL';
       if (animationStageProgress) animationStageProgress.textContent = '100%';
       updateAnimationUI();
@@ -207,8 +210,8 @@ function wireDrop(dropId, fileId, img, onLoaded, useBackgroundImage) {
   });
 }
 
-wireDrop('dropA', 'fileA', imgA, () => { hasA = true; compositionReady = false; updateAnimationUI(); }, false);
-wireDrop('dropB', 'fileB', imgB, () => { hasB = true; compositionReady = false; updateAnimationUI(); }, false);
+wireDrop('dropA', 'fileA', imgA, () => { hasA = true; compositionReady = false; hasAnimatedOnce = false; updateAnimationUI(); }, false);
+wireDrop('dropB', 'fileB', imgB, () => { hasB = true; compositionReady = false; hasAnimatedOnce = false; updateAnimationUI(); }, false);
 wireDrop('dropC', 'fileC', imgC, () => { hasC = true; }, true);
 
 directionBtns.forEach(btn => {
@@ -216,7 +219,7 @@ directionBtns.forEach(btn => {
     directionBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     currentDirection = btn.dataset.direction;
-    compositionReady = false;
+    if (!hasAnimatedOnce) compositionReady = false;
     updateAnimationUI();
     render();
   });
@@ -227,13 +230,13 @@ profileBtns.forEach(btn => {
     profileBtns.forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     currentProfile = btn.dataset.profile;
-    compositionReady = false;
+    if (!hasAnimatedOnce) compositionReady = false;
     updateAnimationUI();
     render();
   });
 });
 
-zoomWithMeshToggle.addEventListener('change', () => { compositionReady = false; updateAnimationUI(); render(); });
+zoomWithMeshToggle.addEventListener('change', () => { if (!hasAnimatedOnce) compositionReady = false; updateAnimationUI(); render(); });
 
 function seededRandom(row, col, salt) {
   let x = Math.sin(row * 127.1 + col * 311.7 + salt * 74.7) * 43758.5453;
@@ -325,7 +328,7 @@ function render() {
     updateAnimationUI();
     return;
   }
-  if (!animationPlaying && !compositionReady) {
+  if (!animationPlaying && !compositionReady && !hasAnimatedOnce) {
     canvasHint.style.display = 'none';
     if (playOverlayBtn) playOverlayBtn.style.display = 'block';
     downloadBtn.disabled = true;
@@ -842,7 +845,7 @@ function renderDiagonalWeave(p) {
  exposureASlider, brillianceASlider, exposureBSlider, brillianceBSlider].forEach(el => {
   el.addEventListener('input', () => {
     if (animationPlaying) stopAnimation();
-    compositionReady = false;
+    if (!hasAnimatedOnce) compositionReady = false;
     updateAnimationUI();
     meshVal.textContent = meshSlider.value;
     strandLengthVal.textContent = strandLengthSlider.value;
@@ -862,11 +865,12 @@ function renderDiagonalWeave(p) {
     render();
   });
 });
-backlightToggle.addEventListener('change', () => { compositionReady = false; updateAnimationUI(); render(); });
+backlightToggle.addEventListener('change', () => { if (!hasAnimatedOnce) compositionReady = false; updateAnimationUI(); render(); });
 
 resetBtn.addEventListener('click', () => {
   if (animationPlaying) stopAnimation();
   compositionReady = false;
+  hasAnimatedOnce = false;
   meshSlider.value = 40; strandLengthSlider.value = 1; depthAmtSlider.value = 60; shadowReachSlider.value = 75; warpSlider.value = 0;
   lightDirectionSlider.value = 45; grainSlider.value = 0;
   imperfectionSlider.value = 15; densitySlider.value = 50; tensionSlider.value = 50;
