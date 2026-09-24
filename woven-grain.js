@@ -11,86 +11,6 @@
 const outputCanvas = document.getElementById('outputCanvas');
 const ctx = outputCanvas.getContext('2d');
 const canvasHint = document.getElementById('canvasHint');
-// ── WOVEN GENERATION ANIMATION ──────────────────────────────────────────────
-// The animation is a real progressive render of the existing weave engine:
-// INPUT → CUT → ALIGN → WEAVE → FORM → LIGHT → FINAL.
-// It does not fake motion by zooming the finished image. The weave itself is
-// revealed cell-by-cell while relief and lighting build in over the same pass.
-let animationMode = false;
-let animationProgress = 1;
-let animationFrame = null;
-let animationStart = 0;
-const ANIMATION_DURATION = 6200;
-const animateBtn = document.getElementById('animateBtn');
-const animationStage = document.getElementById('animationStage');
-const animationStageLabel = document.getElementById('animationStageLabel');
-const animationStageProgress = document.getElementById('animationStageProgress');
-
-function animationState(p) {
-  if (p < 0.10) return { name: 'INPUT', reveal: 0, depth: 0, light: 0, opacity: p / 0.10 };
-  if (p < 0.22) return { name: 'CUT', reveal: (p - 0.10) / 0.12 * 0.12, depth: 0, light: 0, opacity: 1 };
-  if (p < 0.60) return { name: 'WEAVE', reveal: 0.12 + (p - 0.22) / 0.38 * 0.88, depth: 0, light: 0, opacity: 1 };
-  if (p < 0.78) return { name: 'FORM', reveal: 1, depth: (p - 0.60) / 0.18, light: 0, opacity: 1 };
-  if (p < 0.94) return { name: 'LIGHT', reveal: 1, depth: 1, light: (p - 0.78) / 0.16, opacity: 1 };
-  return { name: 'FINAL', reveal: 1, depth: 1, light: 1, opacity: 1 };
-}
-
-function getAnimationCellProgress(row, col, totalRows, totalCols) {
-  // Stable serpentine reveal so the weave grows like a material being woven,
-  // rather than simply drawing one diagonal scanline across the photograph.
-  const rr = Math.max(0, row);
-  const cc = Math.max(0, col);
-  const index = (rr % 2 === 0) ? cc : (totalCols - 1 - cc);
-  return (rr * totalCols + index) / Math.max(1, totalRows * totalCols - 1);
-}
-
-function animationRevealAllows(row, col, totalRows, totalCols) {
-  if (!animationMode) return true;
-  const st = animationState(animationProgress);
-  return st.reveal >= 0.999 || getAnimationCellProgress(row, col, totalRows, totalCols) <= st.reveal;
-}
-
-function startWeaveAnimation() {
-  if (!hasA || !hasB || animationMode) return;
-  animationMode = true;
-  animationProgress = 0;
-  animationStart = performance.now();
-  animateBtn.textContent = 'PLAYING…';
-  animateBtn.disabled = true;
-  animationStage.style.display = 'block';
-  if (animationFrame) cancelAnimationFrame(animationFrame);
-
-  function tick(now) {
-    const elapsed = now - animationStart;
-    animationProgress = Math.min(1, elapsed / ANIMATION_DURATION);
-    const st = animationState(animationProgress);
-    animationStageLabel.textContent = st.name;
-    animationStageProgress.textContent = Math.round(animationProgress * 100) + '%';
-    render();
-    if (animationProgress < 1) {
-      animationFrame = requestAnimationFrame(tick);
-    } else {
-      animationMode = false;
-      animationProgress = 1;
-      animationStageLabel.textContent = 'FINAL';
-      animationStageProgress.textContent = '100%';
-      animateBtn.textContent = 'PLAY WEAVE';
-      animateBtn.disabled = !(hasA && hasB);
-      render();
-    }
-  }
-  animationFrame = requestAnimationFrame(tick);
-}
-
-function stopWeaveAnimation() {
-  if (animationFrame) cancelAnimationFrame(animationFrame);
-  animationFrame = null;
-  animationMode = false;
-  animationProgress = 1;
-  animationStage.style.display = 'none';
-  animateBtn.textContent = 'PLAY WEAVE';
-  animateBtn.disabled = !(hasA && hasB);
-}
 
 // THEME SWITCH: matches the series convention (body.theme-xxx class swap),
 // two beige palettes only — Sarashi（晒し布×真鍮、既定）／Touki（陶器×抹茶）
@@ -164,6 +84,91 @@ const lightIntensityVal = document.getElementById('lightIntensityVal');
 
 const downloadBtn = document.getElementById('downloadBtn');
 const resetBtn = document.getElementById('resetBtn');
+const animateBtn = document.getElementById('animateBtn');
+const animationStage = document.getElementById('animationStage');
+const animationStageLabel = document.getElementById('animationStageLabel');
+const animationStageProgress = document.getElementById('animationStageProgress');
+
+let animationProgress = null;
+let animationFrame = 0;
+let animationPlaying = false;
+
+function updateAnimationUI() {
+  const ready = hasA && hasB;
+  if (animateBtn) animateBtn.disabled = !ready || animationPlaying;
+  if (downloadBtn) downloadBtn.disabled = !ready;
+}
+
+function animationStageInfo(p) {
+  if (p < 0.12) return ['INPUT', p / 0.12];
+  if (p < 0.25) return ['CUT', (p - 0.12) / 0.13];
+  if (p < 0.67) return ['WEAVE', (p - 0.25) / 0.42];
+  if (p < 0.84) return ['FORM', (p - 0.67) / 0.17];
+  if (p < 0.96) return ['LIGHT', (p - 0.84) / 0.12];
+  return ['FINAL', (p - 0.96) / 0.04];
+}
+
+function shouldRevealCell(row, col, maxRow, maxCol, p, salt = 0) {
+  // A deterministic serpentine reveal: neighboring cells appear in a woven order,
+  // rather than the finished image simply fading in.
+  const rr = Math.max(0, row), cc = Math.max(0, col);
+  const serp = (rr % 2 === 0) ? cc : (maxCol - cc);
+  const path = rr * (maxCol + 1) + serp;
+  const total = Math.max(1, (maxRow + 1) * (maxCol + 1) - 1);
+  const threshold = path / total;
+  const jitter = (seededRandom(rr, cc, 900 + salt) - 0.5) * 0.025;
+  return threshold <= p + jitter;
+}
+
+function stopAnimation() {
+  if (animationFrame) cancelAnimationFrame(animationFrame);
+  animationFrame = 0;
+  animationPlaying = false;
+  animationProgress = null;
+  if (animationStage) animationStage.style.display = 'none';
+  updateAnimationUI();
+  render();
+}
+
+function playWeaveAnimation() {
+  if (!hasA || !hasB || animationPlaying) return;
+  if (animationFrame) cancelAnimationFrame(animationFrame);
+
+  animationPlaying = true;
+  animationProgress = 0;
+  if (animationStage) animationStage.style.display = 'block';
+  updateAnimationUI();
+
+  const start = performance.now();
+  const duration = 7000;
+
+  function tick(now) {
+    const p = Math.min(1, (now - start) / duration);
+    animationProgress = p;
+    const [label, local] = animationStageInfo(p);
+    if (animationStageLabel) animationStageLabel.textContent = label;
+    if (animationStageProgress) animationStageProgress.textContent = Math.round(local * 100) + '%';
+    render();
+
+    if (p < 1) {
+      animationFrame = requestAnimationFrame(tick);
+    } else {
+      animationFrame = 0;
+      animationPlaying = false;
+      animationProgress = null;
+      if (animationStageLabel) animationStageLabel.textContent = 'FINAL';
+      if (animationStageProgress) animationStageProgress.textContent = '100%';
+      updateAnimationUI();
+      render();
+      setTimeout(() => {
+        if (!animationPlaying && animationStage) animationStage.style.display = 'none';
+      }, 900);
+    }
+  }
+  animationFrame = requestAnimationFrame(tick);
+}
+
+if (animateBtn) animateBtn.addEventListener('click', playWeaveAnimation);
 
 const previewA = document.getElementById('previewA');
 const previewB = document.getElementById('previewB');
@@ -179,7 +184,6 @@ function wireDrop(dropId, fileId, img, onLoaded, useBackgroundImage) {
     reader.onload = (ev) => {
       img.onload = () => {
         onLoaded();
-        if (animateBtn) animateBtn.disabled = !(hasA && hasB);
         drop.classList.add('filled');
         if (useBackgroundImage) drop.style.backgroundImage = `url(${ev.target.result})`;
         render();
@@ -190,11 +194,9 @@ function wireDrop(dropId, fileId, img, onLoaded, useBackgroundImage) {
   });
 }
 
-wireDrop('dropA', 'fileA', imgA, () => { hasA = true; }, false);
-wireDrop('dropB', 'fileB', imgB, () => { hasB = true; }, false);
+wireDrop('dropA', 'fileA', imgA, () => { hasA = true; updateAnimationUI(); }, false);
+wireDrop('dropB', 'fileB', imgB, () => { hasB = true; updateAnimationUI(); }, false);
 wireDrop('dropC', 'fileC', imgC, () => { hasC = true; }, true);
-
-if (animateBtn) animateBtn.addEventListener('click', startWeaveAnimation);
 
 directionBtns.forEach(btn => {
   btn.addEventListener('click', () => {
@@ -302,11 +304,8 @@ function render() {
   const zoomWithMesh = zoomWithMeshToggle.checked;
   const zoomFactor = zoomWithMesh ? Math.max(1, mesh / 40) : 1; // 既定はOFF：MESH SIZEを変えても写真サイズは変わらない
   const strandLength = parseInt(strandLengthSlider.value, 10);
-  const baseDepthAmt = parseInt(depthAmtSlider.value, 10) / 100;
-  const baseShadowReach = parseInt(shadowReachSlider.value, 10) / 100;
-  const animState = animationMode ? animationState(animationProgress) : { depth: 1, light: 1, opacity: 1, reveal: 1 };
-  const depthAmt = baseDepthAmt * animState.depth;
-  const shadowReach = baseShadowReach * (0.25 + 0.75 * animState.light);
+  const depthAmt = parseInt(depthAmtSlider.value, 10) / 100;
+  const shadowReach = parseInt(shadowReachSlider.value, 10) / 100;
   const lightDirectionDeg = parseInt(lightDirectionSlider.value, 10);
   // 0°=top, 90°=right, 180°=bottom, 270°=left (clockwise from top), matching the compass feel of the slider
   const lightRad = (lightDirectionDeg - 90) * Math.PI / 180;
@@ -322,10 +321,49 @@ function render() {
   const lightIntensity = parseInt(lightIntensitySlider.value, 10) / 100;
   const grainAmt = parseInt(grainSlider.value, 10) / 100;
 
+  // Animation phases:
+  // INPUT/CUT: establish the material and cutting idea;
+  // WEAVE: progressively reveal the actual cells in a serpentine woven order;
+  // FORM: increase depth/overlap;
+  // LIGHT: progressively introduce directional relief lighting.
+  const ap = animationProgress;
+  const weaveP = ap == null ? 1 : Math.max(0, Math.min(1, (ap - 0.25) / 0.42));
+  const formP = ap == null ? 1 : Math.max(0, Math.min(1, (ap - 0.67) / 0.17));
+  const lightP = ap == null ? 1 : Math.max(0, Math.min(1, (ap - 0.84) / 0.12));
+  const visualDepthAmt = depthAmt * (ap == null ? 1 : formP);
+  const visualLightIntensity = lightIntensity * (ap == null ? 1 : lightP);
+
+  if (ap != null && ap < 0.25) {
+    // Give INPUT/CUT a clear visual identity instead of showing the finished weave.
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+    ctx.save();
+    ctx.globalAlpha = ap < 0.12 ? ap / 0.12 : 1;
+    ctx.filter = filterA;
+    drawCover(imgA, w * 0.46, h);
+    ctx.restore();
+    ctx.save();
+    ctx.globalAlpha = ap < 0.12 ? ap / 0.12 : 1;
+    ctx.translate(w * 0.54, 0);
+    ctx.filter = filterB;
+    drawCover(imgB, w * 0.46, h);
+    ctx.restore();
+    if (ap >= 0.12) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, (ap - 0.12) / 0.13);
+      ctx.strokeStyle = 'rgba(255,248,232,.75)';
+      ctx.lineWidth = 1;
+      const step = Math.max(12, mesh);
+      for (let x = 0; x <= w; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+      for (let y = 0; y <= h; y += step) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+      ctx.restore();
+    }
+    return;
+  }
+
   if (backlightOn) {
     ctx.save();
-    ctx.globalAlpha = animState.opacity;
-    ctx.filter = `brightness(${0.6 + lightIntensity * 1.1})`;
+    ctx.filter = `brightness(${0.6 + visualLightIntensity * 1.1})`;
     drawCover(imgC, w, h);
     ctx.restore();
   } else {
@@ -337,8 +375,8 @@ function render() {
   }
 
   if (currentDirection === 'diagonal') {
-    renderDiagonalWeave({ mesh, zoomFactor, strandLength, depthAmt, shadowReach, lightVec, warpAmt, imperfAmt, density, tensionFactor, tensionSizeAdjust, tensionDepthMul, filterA, filterB });
-    if (!animationMode || animationProgress > 0.94) applyGrain(grainAmt);
+    renderDiagonalWeave({ mesh, zoomFactor, strandLength, depthAmt: visualDepthAmt, shadowReach, lightVec, warpAmt, imperfAmt, density, tensionFactor, tensionSizeAdjust, tensionDepthMul, filterA, filterB, animationProgress: ap, weaveProgress: weaveP, lightProgress: lightP });
+    if (ap == null || ap >= 0.96) applyGrain(grainAmt);
     return;
   }
 
@@ -360,9 +398,7 @@ function render() {
     for (let gx = 0; gx < w; gx += mesh) {
       const col = Math.floor(gx / mesh);
       const row = Math.floor(gy / mesh);
-      const totalCols = Math.ceil(w / mesh);
-      const totalRows = Math.ceil(h / mesh);
-      if (!animationRevealAllows(row, col, totalRows, totalCols)) continue;
+      if (ap != null && !shouldRevealCell(row, col, Math.ceil(h / mesh) - 1, Math.ceil(w / mesh) - 1, weaveP, 1)) continue;
       const gRow = Math.floor(row / strandLength);
       const gCol = Math.floor(col / strandLength);
       let baseUseA = currentDirection === 'stripe' ? col % 2 === 0 : (gRow + gCol) % 2 === 0;
@@ -412,6 +448,7 @@ function render() {
     for (let gx = 0; gx < w; gx += mesh) {
       const col = Math.floor(gx / mesh);
       const row = Math.floor(gy / mesh);
+      if (ap != null && !shouldRevealCell(row, col, Math.ceil(h / mesh) - 1, Math.ceil(w / mesh) - 1, weaveP, 2)) continue;
       let baseUseA;
       // STRAND LENGTH groups multiple cells into one continuous-looking strand segment
       // (real basket weave doesn't alternate every single tiny square — see basket weave
@@ -483,12 +520,12 @@ function render() {
           gw0 = Math.min(strandLength * mesh, w - gx0);
           gh0 = Math.min(strandLength * mesh, h - gy0);
         }
-        applyEdgeGlow(gx0, gy0, gw0, gh0, useA, depthAmt, shadowReach, tensionDepthMul, lightVec);
+        applyEdgeGlow(gx0, gy0, gw0, gh0, useA, visualDepthAmt, shadowReach, tensionDepthMul, lightVec);
       }
     }
   }
 
-  if (!animationMode || animationProgress > 0.94) applyGrain(grainAmt);
+  if (ap == null || ap >= 0.96) applyGrain(grainAmt);
 }
 
 // Film-grain-style noise overlay — a per-pixel random luminance texture blended
@@ -590,7 +627,7 @@ function applyPolygonEdgeGlow(corners, useA, depthAmt, shadowReach, tensionDepth
 // like real diagonal basketry — each "cell" is a diamond in screen space, clipped
 // and filled with the correctly-oriented (unrotated) photo content underneath.
 function renderDiagonalWeave(p) {
-  const { mesh, zoomFactor, strandLength, depthAmt, shadowReach, lightVec, warpAmt, imperfAmt, density, tensionFactor, tensionSizeAdjust, tensionDepthMul, filterA, filterB } = p;
+  const { mesh, zoomFactor, strandLength, depthAmt, shadowReach, lightVec, warpAmt, imperfAmt, density, tensionFactor, tensionSizeAdjust, tensionDepthMul, filterA, filterB, animationProgress, weaveProgress } = p;
   const w = outputCanvas.width, h = outputCanvas.height;
   const cx = w / 2, cy = h / 2;
   const cosA = Math.SQRT1_2, sinA = Math.SQRT1_2; // 45°
@@ -626,12 +663,9 @@ function renderDiagonalWeave(p) {
   for (let row = -range; row <= range; row++) {
     for (let col = -range; col <= range; col++) {
       const u0 = row * mesh, v0 = col * mesh;
-      const animRow = row + range;
-      const animCol = col + range;
-      const totalDiag = range * 2 + 1;
-      if (!animationRevealAllows(animRow, animCol, totalDiag, totalDiag)) continue;
       const gRow = Math.floor(row / strandLength);
       const gCol = Math.floor(col / strandLength);
+      if (animationProgress != null && !shouldRevealCell(row + range, col + range, range * 2, range * 2, weaveProgress, 4)) continue;
       let baseUseA = (gRow + gCol) % 2 === 0;
       let useA = baseUseA;
       if (density > 50 && !baseUseA) { if (seededRandom(gRow, gCol, 5) < (density - 50) / 50) useA = true; }
@@ -675,14 +709,11 @@ function renderDiagonalWeave(p) {
   for (let row = -range; row <= range; row++) {
     for (let col = -range; col <= range; col++) {
       const u0 = row * mesh, v0 = col * mesh;
-      const animRow = row + range;
-      const animCol = col + range;
-      const totalDiag = range * 2 + 1;
-      if (!animationRevealAllows(animRow, animCol, totalDiag, totalDiag)) continue;
       // STRAND LENGTH groups neighboring diamonds into the same continuous segment,
       // same rationale as basket/stripe below
       const gRow = Math.floor(row / strandLength);
       const gCol = Math.floor(col / strandLength);
+      if (animationProgress != null && !shouldRevealCell(row + range, col + range, range * 2, range * 2, weaveProgress, 5)) continue;
       let baseUseA = (gRow + gCol) % 2 === 0;
       let useA = baseUseA;
       if (density > 50 && !baseUseA) {
@@ -770,6 +801,7 @@ function renderDiagonalWeave(p) {
 [meshSlider, strandLengthSlider, warpSlider, imperfectionSlider, densitySlider, tensionSlider, depthAmtSlider, shadowReachSlider, lightDirectionSlider, grainSlider, lightIntensitySlider,
  exposureASlider, brillianceASlider, exposureBSlider, brillianceBSlider].forEach(el => {
   el.addEventListener('input', () => {
+    if (animationPlaying) stopAnimation();
     meshVal.textContent = meshSlider.value;
     strandLengthVal.textContent = strandLengthSlider.value;
     warpVal.textContent = warpSlider.value + '%';
@@ -791,7 +823,7 @@ function renderDiagonalWeave(p) {
 backlightToggle.addEventListener('change', render);
 
 resetBtn.addEventListener('click', () => {
-  stopWeaveAnimation();
+  if (animationPlaying) stopAnimation();
   meshSlider.value = 40; strandLengthSlider.value = 1; depthAmtSlider.value = 60; shadowReachSlider.value = 75; warpSlider.value = 0;
   lightDirectionSlider.value = 45; grainSlider.value = 0;
   imperfectionSlider.value = 15; densitySlider.value = 50; tensionSlider.value = 50;
@@ -837,4 +869,5 @@ window.addEventListener('resize', () => {
   resizeDebounce = setTimeout(render, 150);
 });
 
+updateAnimationUI();
 render();

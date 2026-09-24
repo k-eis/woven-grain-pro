@@ -391,8 +391,13 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
 
       <div class="ctrl-group" style="border-bottom:none;">
         <div class="action-buttons">
+          <button class="btn" id="animateBtn" disabled>PLAY WEAVE</button>
           <button class="btn" id="downloadBtn" disabled>SAVE AS PNG</button>
           <button class="btn secondary" id="resetBtn">RESET</button>
+        </div>
+        <div id="animationStage" style="display:none; margin-top:12px; text-align:center; font:600 10px/1.4 var(--sans); letter-spacing:0.12em; color:var(--ink); opacity:.72;">
+          <span id="animationStageLabel">INPUT</span>
+          <span id="animationStageProgress">0%</span>
         </div>
       </div>
 
