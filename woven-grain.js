@@ -1187,6 +1187,7 @@ let threeState = null;
 let threeAvailable = false;
 let threeLoading = false;
 let threeLoadPromise = null;
+let threeInitError = null;
 
 function setEngineStatus(message) {
   if (engineStatus) engineStatus.textContent = message;
@@ -1199,7 +1200,7 @@ function loadThreeLibrary() {
   setEngineStatus('3Dエンジンを読み込んでいます…');
   threeLoadPromise = new Promise(resolve => {
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.min.js';
+    script.src = 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js';
     script.async = true;
     script.onload = () => {
       threeLoading = false;
@@ -1221,18 +1222,38 @@ function isMobileDevice() {
 }
 
 async function setRenderEngine(mode) {
+  // Always make the requested button state visible immediately. Never disable or
+  // visually white-out the 3D control while the library is loading.
+  renderEngineBtns.forEach(b => {
+    const active = b.dataset.engine === mode;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+
   if (mode === '3d' && !threeAvailable) {
-    if (threeLoading) return;
+    if (threeLoading) {
+      setEngineStatus('3Dエンジンを読み込んでいます…');
+      return;
+    }
     const ok = await loadThreeLibrary();
-    if (!ok) {
-      setRenderEngine('2d');
+    if (!ok || !threeState) {
+      renderEngine = '2d';
+      document.body.classList.remove('woven-3d');
+      document.body.classList.add('woven-2d');
+      renderEngineBtns.forEach(b => {
+        const active = b.dataset.engine === '2d';
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+      setEngineStatus('3Dを初期化できませんでした。2Dで表示しています。');
+      render();
       return;
     }
   }
+
   renderEngine = mode;
   document.body.classList.toggle('woven-3d', mode === '3d');
   document.body.classList.toggle('woven-2d', mode === '2d');
-  renderEngineBtns.forEach(b => b.classList.toggle('active', b.dataset.engine === mode));
   if (threeState && mode === '3d') resizeThree();
   setEngineStatus(mode === '3d' ? '3D TRUE WEAVE — GPU立体処理' : '2D — 軽量レンダリング');
   render();
@@ -1345,6 +1366,7 @@ function initThree() {
     resizeThree();
     return true;
   } catch (err) {
+    threeInitError = err;
     console.warn('Woven Grain 3D init failed; using 2D fallback.', err);
     threeState = null;
     return false;
@@ -1622,15 +1644,17 @@ function downloadCurrentRender() {
 }
 downloadBtn.addEventListener('click', downloadCurrentRender);
 
-threeAvailable = !!initThree();
-if (threeAvailable) {
-  setRenderEngine('3d');
-} else {
-  renderEngine = '2d';
-  document.body.classList.add('woven-2d');
-  renderEngineBtns.forEach(b => b.classList.toggle('active', b.dataset.engine === '2d'));
-  setEngineStatus('2Dで起動中。3Dボタンを押すと3Dエンジンを読み込みます。');
-}
+// Start in the stable 2D engine. 3D is initialized only when the user asks for it.
+// This avoids a blank/white WebGL surface on mobile before the page has any images.
+renderEngine = '2d';
+document.body.classList.remove('woven-3d');
+document.body.classList.add('woven-2d');
+renderEngineBtns.forEach(b => {
+  const active = b.dataset.engine === '2d';
+  b.classList.toggle('active', active);
+  b.setAttribute('aria-pressed', active ? 'true' : 'false');
+});
+setEngineStatus('2Dで起動中。3Dボタンを押すと3Dエンジンを初期化します。');
 
 window.addEventListener('resize', () => {
   if (renderEngine === '3d') {
