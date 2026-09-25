@@ -54,6 +54,14 @@ const directionBtns = document.querySelectorAll('[data-direction]');
 let currentDirection = 'basket';
 const profileBtns = document.querySelectorAll('[data-profile]');
 let currentProfile = 'round';
+const reliefSlider = document.getElementById('relief');
+const reliefVal = document.getElementById('reliefVal');
+const contactShadowSlider = document.getElementById('contactShadow');
+const contactShadowVal = document.getElementById('contactShadowVal');
+const specularSlider = document.getElementById('specular');
+const specularVal = document.getElementById('specularVal');
+const surfaceBendSlider = document.getElementById('surfaceBend');
+const surfaceBendVal = document.getElementById('surfaceBendVal');
 
 const exposureASlider = document.getElementById('exposureA');
 const exposureAVal = document.getElementById('exposureAVal');
@@ -189,6 +197,95 @@ if (playOverlayBtn) playOverlayBtn.addEventListener('click', playWeaveAnimation)
 const previewA = document.getElementById('previewA');
 const previewB = document.getElementById('previewB');
 
+// iOS/Safari does not support CanvasRenderingContext2D.filter, so Photo A/B
+// adjustments must not rely on ctx.filter. We build small, output-sized filtered
+// source canvases once per slider value and reuse them for every weave cell.
+let filteredSourceA = null, filteredSourceB = null;
+let filteredKeyA = '', filteredKeyB = '';
+
+function clamp255(v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+
+function buildFilteredSource(img, exposureVal, brillianceVal, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const cctx = c.getContext('2d', { willReadFrequently: true });
+  // First make the same cover crop used by the app.
+  drawCover(img, w, h, cctx);
+  const imageData = cctx.getImageData(0, 0, w, h);
+  const d = imageData.data;
+  const brightness = 1 + exposureVal / 100;
+  const contrast = 1 + brillianceVal / 130;
+  const saturate = 1 + brillianceVal / 100;
+  for (let i = 0; i < d.length; i += 4) {
+    let r = d[i] * brightness;
+    let g = d[i + 1] * brightness;
+    let b = d[i + 2] * brightness;
+    r = (r - 128) * contrast + 128;
+    g = (g - 128) * contrast + 128;
+    b = (b - 128) * contrast + 128;
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    r = lum + (r - lum) * saturate;
+    g = lum + (g - lum) * saturate;
+    b = lum + (b - lum) * saturate;
+    d[i] = clamp255(r);
+    d[i + 1] = clamp255(g);
+    d[i + 2] = clamp255(b);
+  }
+  cctx.putImageData(imageData, 0, 0);
+  return c;
+}
+
+function getFilteredSources(w, h) {
+  const aExp = parseInt(exposureASlider.value, 10);
+  const aBri = parseInt(brillianceASlider.value, 10);
+  const bExp = parseInt(exposureBSlider.value, 10);
+  const bBri = parseInt(brillianceBSlider.value, 10);
+  const keyA = `${aExp}/${aBri}/${w}/${h}`;
+  const keyB = `${bExp}/${bBri}/${w}/${h}`;
+  if (!filteredSourceA || filteredKeyA !== keyA) {
+    filteredSourceA = buildFilteredSource(imgA, aExp, aBri, w, h);
+    filteredKeyA = keyA;
+  }
+  if (!filteredSourceB || filteredKeyB !== keyB) {
+    filteredSourceB = buildFilteredSource(imgB, bExp, bBri, w, h);
+    filteredKeyB = keyB;
+  }
+  return { A: filteredSourceA, B: filteredSourceB };
+}
+
+function sampleOutputSpace(gx, gy, cw, ch, warpX, warpY, zoomFactor, w, h) {
+  const sx = (gx + warpX - w / 2) * zoomFactor + w / 2;
+  const sy = (gy + warpY - h / 2) * zoomFactor + h / 2;
+  return { sx, sy, sw: cw * zoomFactor, sh: ch * zoomFactor };
+}
+
+// Safari/iOS can behave badly when drawImage() receives a source rectangle
+// that extends outside a canvas. DIAGONAL reaches beyond the source edges by
+// design (the rotated diamonds at the four corners), so clamp the source rect
+// and keep the destination rect geometrically aligned.
+function drawClampedSource(source, sx, sy, sw, sh, dx, dy, dw, dh) {
+  const srcW = Number(source.width) || 0;
+  const srcH = Number(source.height) || 0;
+  if (!srcW || !srcH || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
+
+  const x0 = Math.max(0, sx);
+  const y0 = Math.max(0, sy);
+  const x1 = Math.min(srcW, sx + sw);
+  const y1 = Math.min(srcH, sy + sh);
+  if (x1 <= x0 || y1 <= y0) return;
+
+  const rx0 = (x0 - sx) / sw;
+  const ry0 = (y0 - sy) / sh;
+  const rx1 = (x1 - sx) / sw;
+  const ry1 = (y1 - sy) / sh;
+  const ddx = dx + dw * rx0;
+  const ddy = dy + dh * ry0;
+  const ddw = dw * (rx1 - rx0);
+  const ddh = dh * (ry1 - ry0);
+  if (ddw <= 0 || ddh <= 0) return;
+  ctx.drawImage(source, x0, y0, x1 - x0, y1 - y0, ddx, ddy, ddw, ddh);
+}
+
 function wireDrop(dropId, fileId, img, onLoaded, useBackgroundImage) {
   const drop = document.getElementById(dropId);
   const file = document.getElementById(fileId);
@@ -253,13 +350,25 @@ function photoFilter(exposureVal, brillianceVal) {
   return `brightness(${brightness}) contrast(${contrast}) saturate(${saturate})`;
 }
 
+function imageNaturalSize(img) {
+  // HTMLImageElement uses naturalWidth/naturalHeight; our mobile-safe filtered
+  // sources are canvases, which use width/height instead. Keep both paths here
+  // so the animation can render the filtered sources without producing NaN
+  // coordinates on iOS Safari.
+  const nw = Number(img.naturalWidth) || Number(img.width) || 0;
+  const nh = Number(img.naturalHeight) || Number(img.height) || 0;
+  return { width: nw, height: nh };
+}
+
 function drawCover(img, w, h, destCtx) {
   const targetCtx = destCtx || ctx;
-  const ir = img.naturalWidth / img.naturalHeight;
+  const size = imageNaturalSize(img);
+  if (!size.width || !size.height || !w || !h) return;
+  const ir = size.width / size.height;
   const cr = w / h;
   let sx, sy, sw, sh;
-  if (ir > cr) { sh = img.naturalHeight; sw = sh * cr; sx = (img.naturalWidth - sw) / 2; sy = 0; }
-  else { sw = img.naturalWidth; sh = sw / cr; sx = 0; sy = (img.naturalHeight - sh) / 2; }
+  if (ir > cr) { sh = size.height; sw = sh * cr; sx = (size.width - sw) / 2; sy = 0; }
+  else { sw = size.width; sh = sw / cr; sx = 0; sy = (size.height - sh) / 2; }
   targetCtx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
 }
 
@@ -276,9 +385,9 @@ function updatePreviews(filterA, filterB) {
     if (previewA.height !== h) previewA.height = h;
     const pctx = previewA.getContext('2d');
     pctx.clearRect(0, 0, w, h);
-    pctx.filter = filterA;
     drawCover(imgA, w, h, pctx);
-    pctx.filter = 'none';
+    previewA.style.filter = filterA;
+    previewA.style.webkitFilter = filterA;
   }
   if (hasB && previewB) {
     const w = previewB.clientWidth || 160, h = previewB.clientHeight || 160;
@@ -286,9 +395,9 @@ function updatePreviews(filterA, filterB) {
     if (previewB.height !== h) previewB.height = h;
     const pctx = previewB.getContext('2d');
     pctx.clearRect(0, 0, w, h);
-    pctx.filter = filterB;
     drawCover(imgB, w, h, pctx);
-    pctx.filter = 'none';
+    previewB.style.filter = filterB;
+    previewB.style.webkitFilter = filterB;
   }
 }
 
@@ -339,6 +448,10 @@ function render() {
   if (playOverlayBtn) playOverlayBtn.style.display = 'none';
   downloadBtn.disabled = false;
 
+  const filteredSources = getFilteredSources(w, h);
+  const sourceA = filteredSources.A;
+  const sourceB = filteredSources.B;
+
   const mesh = parseInt(meshSlider.value, 10);
   const zoomWithMesh = zoomWithMeshToggle.checked;
   const zoomFactor = zoomWithMesh ? Math.max(1, mesh / 40) : 1; // 既定はOFF：MESH SIZEを変えても写真サイズは変わらない
@@ -360,6 +473,10 @@ function render() {
   const backlightOn = backlightToggle.checked && hasC;
   const lightIntensity = parseInt(lightIntensitySlider.value, 10) / 100;
   const grainAmt = parseInt(grainSlider.value, 10) / 100;
+  const reliefAmt = Math.max(parseInt(reliefSlider.value, 10) / 100, depthAmt * 0.72);
+  const contactShadowAmt = parseInt(contactShadowSlider.value, 10) / 100;
+  const specularAmt = parseInt(specularSlider.value, 10) / 100;
+  const surfaceBendAmt = parseInt(surfaceBendSlider.value, 10) / 100;
 
   // Animation phases:
   // INPUT/CUT: establish the material and cutting idea;
@@ -380,14 +497,12 @@ function render() {
     ctx.fillRect(0, 0, w, h);
     ctx.save();
     ctx.globalAlpha = ap < 0.12 ? ap / 0.12 : 1;
-    ctx.filter = filterA;
-    drawCover(imgA, w * 0.46, h);
+    drawCover(sourceA, w * 0.46, h);
     ctx.restore();
     ctx.save();
     ctx.globalAlpha = ap < 0.12 ? ap / 0.12 : 1;
     ctx.translate(w * 0.54, 0);
-    ctx.filter = filterB;
-    drawCover(imgB, w * 0.46, h);
+    drawCover(sourceB, w * 0.46, h);
     ctx.restore();
     if (ap >= 0.12) {
       ctx.save();
@@ -416,7 +531,7 @@ function render() {
   }
 
   if (currentDirection === 'diagonal') {
-    renderDiagonalWeave({ mesh, zoomFactor, strandLength, depthAmt: visualDepthAmt, shadowReach, lightVec, warpAmt, imperfAmt, density, tensionFactor, tensionSizeAdjust, tensionDepthMul, filterA, filterB, animationProgress: ap, weaveProgress: weaveP, lightProgress: lightP });
+    renderDiagonalWeave({ sourceA, sourceB, mesh, zoomFactor, strandLength, depthAmt: visualDepthAmt, shadowReach, lightVec, lightIntensity: visualLightIntensity, warpAmt, imperfAmt, density, tensionFactor, tensionSizeAdjust, tensionDepthMul, reliefAmt, contactShadowAmt, specularAmt, surfaceBendAmt, filterA, filterB, animationProgress: ap, weaveProgress: weaveP, lightProgress: lightP });
     if (ap == null || ap >= 0.96) applyGrain(grainAmt);
     return;
   }
@@ -451,14 +566,9 @@ function render() {
       const ch = Math.min(mesh, h - gy);
       const warpX = warpAmt * Math.sin(gy * 0.05 + col);
       const warpY = warpAmt * Math.sin(gx * 0.05 + row);
-      const underImg = useA ? imgB : imgA;
-      const ir = underImg.naturalWidth / underImg.naturalHeight;
-      const cr = w / h;
-      const baseScale = ir > cr ? underImg.naturalHeight / h : underImg.naturalWidth / w;
-      const scale = baseScale * zoomFactor;
-      const offX = (underImg.naturalWidth - w * scale) / 2;
-      const offY = (underImg.naturalHeight - h * scale) / 2;
-      const usx = offX + (gx + warpX) * scale, usy = offY + (gy + warpY) * scale;
+      const underImg = useA ? sourceB : sourceA;
+      const underSample = sampleOutputSpace(gx, gy, cw, ch, warpX, warpY, zoomFactor, w, h);
+      const usx = underSample.sx, usy = underSample.sy;
 
       // own jitter (different salt from the OVER pass) so the two layers don't
       // move in lockstep — that's what actually opens small, organic gaps
@@ -472,9 +582,7 @@ function render() {
       ctx.save();
       octagonPath(ufx, ufy, ujw, ujh, cornerCut);
       ctx.clip();
-      ctx.filter = useA ? filterB : filterA;
-      ctx.drawImage(underImg, usx, usy, cw * scale, ch * scale, ufx, ufy, ujw, ujh);
-      ctx.filter = 'none';
+      drawClampedSource(underImg, usx, usy, underSample.sw, underSample.sh, ufx, ufy, ujw, ujh);
       ctx.restore();
     }
   }
@@ -514,16 +622,10 @@ function render() {
 
       // per-photo sample rect, independent of tension/imperfection sizing
       function sampleFor(img) {
-        const ir = img.naturalWidth / img.naturalHeight;
-        const cr = w / h;
-        const baseScale = ir > cr ? img.naturalHeight / h : img.naturalWidth / w;
-        const scale = baseScale * zoomFactor;
-        const offX = (img.naturalWidth - w * scale) / 2;
-        const offY = (img.naturalHeight - h * scale) / 2;
-        return { sx: offX + (gx + warpX) * scale, sy: offY + (gy + warpY) * scale, sw: cw * scale, sh: ch * scale };
+        return sampleOutputSpace(gx, gy, cw, ch, warpX, warpY, zoomFactor, w, h);
       }
 
-      const srcImg = useA ? imgA : imgB;
+      const srcImg = useA ? sourceA : sourceB;
       const fg = sampleFor(srcImg);
       const sx = fg.sx, sy = fg.sy, sw = fg.sw, sh = fg.sh;
 
@@ -541,9 +643,7 @@ function render() {
       ctx.save();
       octagonPath(fx, fy, fw, fh, cornerCut);
       ctx.clip();
-      ctx.filter = useA ? filterA : filterB;
-      ctx.drawImage(srcImg, sx, sy, sw, sh, fx, fy, fw, fh);
-      ctx.filter = 'none';
+      drawClampedSource(srcImg, sx, sy, sw, sh, fx, fy, fw, fh);
       ctx.restore();
 
       // draw the strand-segment's shadow/highlight only ONCE per group, from its
@@ -561,12 +661,28 @@ function render() {
           gw0 = Math.min(strandLength * mesh, w - gx0);
           gh0 = Math.min(strandLength * mesh, h - gy0);
         }
-        applyEdgeGlow(gx0, gy0, gw0, gh0, useA, visualDepthAmt, shadowReach, tensionDepthMul, lightVec);
+        applyEdgeGlow(gx0, gy0, gw0, gh0, useA, visualDepthAmt, shadowReach, tensionDepthMul, lightVec, visualLightIntensity);
       }
     }
   }
 
-  if (ap == null || ap >= 0.96) applyGrain(grainAmt);
+  // Final material pass: one relief treatment per strand group. This adds a
+  // readable cross-section, contact shadow and restrained surface highlight.
+  if (reliefAmt > 0.002 || contactShadowAmt > 0.002 || specularAmt > 0.002) {
+    const rows = Math.ceil(h / mesh), cols = Math.ceil(w / mesh);
+    for (let r = 0; r < rows; r += strandLength) {
+      for (let c = 0; c < cols; c += strandLength) {
+        const gx = c * mesh, gy = r * mesh;
+        const gw = Math.min(strandLength * mesh, w - gx);
+        const gh = Math.min(strandLength * mesh, h - gy);
+        if (gw <= 1 || gh <= 1) continue;
+        const groupParity = (Math.floor(r / strandLength) + Math.floor(c / strandLength)) % 2;
+        applySurfaceReliefRect(gx, gy, gw, gh, groupParity === 0, reliefAmt, contactShadowAmt, specularAmt, surfaceBendAmt, lightVec, visualLightIntensity, shadowReach, groupParity === 0);
+      }
+    }
+  }
+
+  applyGrain(grainAmt);
 }
 
 // Film-grain-style noise overlay — a per-pixel random luminance texture blended
@@ -599,11 +715,128 @@ function applyGrain(amt) {
 // direction across the whole piece (not just "A is always lit, B always dark").
 // lightVec is a unit vector pointing toward the light source; useA still adds a
 // small over/under bias on top of that shared directional lighting.
-function applyEdgeGlow(x, y, w, h, useA, depthAmt, shadowReach, tensionDepthMul, lightVec) {
+function reliefProfileParams() {
+  if (currentProfile === 'round') return { crown: 1.00, edge: 0.72 };
+  if (currentProfile === 'ribbon') return { crown: 0.62, edge: 0.38 };
+  if (currentProfile === 'beveled') return { crown: 0.82, edge: 0.88 };
+  return { crown: 0.32, edge: 0.22 };
+}
+
+// Lightweight 2D relief renderer. It simulates a raised strand cross-section
+// with gradients, contact shadow and a restrained specular highlight, keeping
+// the Canvas-2D/mobile architecture intact while making the weave read as a
+// physical surface rather than a flat photo grid.
+function applySurfaceReliefRect(x, y, w, h, useA, reliefAmt, contactAmt, specAmt, bendAmt, lightVec, lightIntensity, shadowReach, strandHorizontal) {
+  if (reliefAmt <= 0.002 || w <= 1 || h <= 1) return;
+  const pp = reliefProfileParams();
+  const crossLen = strandHorizontal ? h : w;
+  const crown = Math.min(0.62, 0.10 + reliefAmt * 0.48 * pp.crown);
+  const edge = Math.min(0.58, 0.06 + reliefAmt * 0.42 * pp.edge);
+  const lightPower = Math.max(0, Math.min(1, lightIntensity == null ? 1 : lightIntensity));
+  const shadowPower = Math.max(0, Math.min(1, shadowReach == null ? 0.75 : shadowReach));
+  const reach = Math.max(1.5, crossLen * (0.08 + 0.42 * shadowPower + 0.10 * bendAmt));
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+
+  const gx0 = x + (lightVec.x < 0 ? w : 0);
+  const gy0 = y + (lightVec.y < 0 ? h : 0);
+  const gx1 = x + (lightVec.x < 0 ? 0 : w);
+  const gy1 = y + (lightVec.y < 0 ? 0 : h);
+  const shade = ctx.createLinearGradient(gx0, gy0, gx1, gy1);
+  shade.addColorStop(0, `rgba(255,250,238,${crown * (0.70 + 0.30 * lightPower)})`);
+  shade.addColorStop(0.46, `rgba(255,255,255,${crown * 0.28 * lightPower})`);
+  shade.addColorStop(1, `rgba(0,0,0,${edge * (0.72 + 0.28 * shadowPower)})`);
+  ctx.globalCompositeOperation = 'soft-light';
+  ctx.fillStyle = shade;
+  ctx.fillRect(x, y, w, h);
+
+  let cross;
+  cross = strandHorizontal ? ctx.createLinearGradient(0, y, 0, y + h) : ctx.createLinearGradient(x, 0, x + w, 0);
+  if (currentProfile === 'round') {
+    cross.addColorStop(0, `rgba(0,0,0,${edge})`);
+    cross.addColorStop(0.18, `rgba(255,255,255,${crown * 0.24})`);
+    cross.addColorStop(0.50, `rgba(255,255,255,${crown * 0.72})`);
+    cross.addColorStop(0.82, `rgba(255,255,255,${crown * 0.16})`);
+    cross.addColorStop(1, `rgba(0,0,0,${edge * 0.92})`);
+  } else if (currentProfile === 'beveled') {
+    cross.addColorStop(0, `rgba(0,0,0,${edge})`);
+    cross.addColorStop(0.22, `rgba(255,255,255,${crown * 0.30})`);
+    cross.addColorStop(0.50, `rgba(255,255,255,${crown * 0.54})`);
+    cross.addColorStop(0.78, `rgba(255,255,255,${crown * 0.10})`);
+    cross.addColorStop(1, `rgba(0,0,0,${edge * 0.86})`);
+  } else if (currentProfile === 'ribbon') {
+    cross.addColorStop(0, `rgba(0,0,0,${edge * 0.55})`);
+    cross.addColorStop(0.25, `rgba(255,255,255,${crown * 0.14})`);
+    cross.addColorStop(0.50, `rgba(255,255,255,${crown * 0.34})`);
+    cross.addColorStop(0.75, `rgba(255,255,255,${crown * 0.08})`);
+    cross.addColorStop(1, `rgba(0,0,0,${edge * 0.62})`);
+  } else {
+    cross.addColorStop(0, `rgba(0,0,0,${edge * 0.35})`);
+    cross.addColorStop(0.50, `rgba(255,255,255,${crown * 0.14})`);
+    cross.addColorStop(1, `rgba(0,0,0,${edge * 0.38})`);
+  }
+  ctx.globalCompositeOperation = 'soft-light';
+  ctx.fillStyle = cross;
+  ctx.fillRect(x, y, w, h);
+
+  if (contactAmt > 0.002) {
+    const dark = Math.min(0.72, 0.12 + contactAmt * 0.58 + shadowPower * 0.12);
+    const shadowOnPositive = strandHorizontal ? lightVec.y < 0 : lightVec.x < 0;
+    let sg;
+    if (strandHorizontal) {
+      const sy0 = shadowOnPositive ? y + h : y;
+      const sy1 = shadowOnPositive ? y + h - reach : y + reach;
+      sg = ctx.createLinearGradient(0, sy0, 0, sy1);
+    } else {
+      const sx0 = shadowOnPositive ? x + w : x;
+      const sx1 = shadowOnPositive ? x + w - reach : x + reach;
+      sg = ctx.createLinearGradient(sx0, 0, sx1, 0);
+    }
+    sg.addColorStop(0, `rgba(0,0,0,${dark})`);
+    sg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.fillStyle = sg;
+    if (strandHorizontal) {
+      const yy = shadowOnPositive ? y + h - reach : y;
+      ctx.fillRect(x, yy, w, reach);
+    } else {
+      const xx = shadowOnPositive ? x + w - reach : x;
+      ctx.fillRect(xx, y, reach, h);
+    }
+  }
+
+  if (specAmt > 0.002 && currentProfile !== 'flat') {
+    const sp = Math.min(0.34, specAmt * (0.20 + 0.14 * lightPower) * pp.crown);
+    const sg = strandHorizontal ? ctx.createLinearGradient(0, y + h * 0.24, 0, y + h * 0.56) : ctx.createLinearGradient(x + w * 0.24, 0, x + w * 0.56, 0);
+    sg.addColorStop(0, 'rgba(255,255,255,0)');
+    sg.addColorStop(0.55, `rgba(255,255,255,${sp})`);
+    sg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.globalCompositeOperation = 'screen';
+    ctx.fillStyle = sg;
+    ctx.fillRect(x, y, w, h);
+  }
+  ctx.restore();
+}
+
+function applySurfaceReliefPolygon(corners, useA, reliefAmt, contactAmt, specAmt, bendAmt, lightVec, lightIntensity, shadowReach) {
+  if (reliefAmt <= 0.002 || !corners || corners.length < 4) return;
+  const xs = corners.map(c => c[0]), ys = corners.map(c => c[1]);
+  const x = Math.min(...xs), y = Math.min(...ys), w = Math.max(...xs)-x, h = Math.max(...ys)-y;
+  const strandHorizontal = Math.abs(corners[1][0]-corners[0][0]) >= Math.abs(corners[1][1]-corners[0][1]);
+  ctx.save();
+  ctx.beginPath(); ctx.moveTo(corners[0][0],corners[0][1]);
+  for (let i=1;i<corners.length;i++) ctx.lineTo(corners[i][0],corners[i][1]);
+  ctx.closePath(); ctx.clip();
+  applySurfaceReliefRect(x,y,w,h,useA,reliefAmt,contactAmt,specAmt,bendAmt,lightVec,lightIntensity,shadowReach,strandHorizontal);
+  ctx.restore();
+}
+
+function applyEdgeGlow(x, y, w, h, useA, depthAmt, shadowReach, tensionDepthMul, lightVec, lightIntensity) {
   const profileMul = currentProfile === 'round' ? 1.0 : currentProfile === 'ribbon' ? 0.82 : currentProfile === 'beveled' ? 1.12 : 0.58;
-  const peakBase = Math.max(0, Math.min(0.5, 0.27 * depthAmt * tensionDepthMul * profileMul * (useA ? 1.15 : 0.9)));
+  const peakBase = Math.max(0, Math.min(0.78, 0.42 * depthAmt * (0.75 + 0.25 * tensionDepthMul) * profileMul * (0.55 + 0.45 * (lightIntensity == null ? 1 : lightIntensity)) * (useA ? 1.15 : 0.9)));
   if (peakBase <= 0.002) return;
-  const reach = Math.max(1, Math.min(w, h) * 0.5 * Math.max(0.04, shadowReach));
+  const reach = Math.max(1, Math.min(w, h) * (0.08 + 0.55 * Math.max(0.04, shadowReach)));
 
   function edgeGlow(nx, ny, gx0, gy0, gx1, gy1, rx, ry, rw, rh) {
     const lit = nx * lightVec.x + ny * lightVec.y; // -1..1, >0 = facing the light
@@ -626,13 +859,13 @@ function applyEdgeGlow(x, y, w, h, useA, depthAmt, shadowReach, tensionDepthMul,
 // Same idea as applyEdgeGlow but for an arbitrary quadrilateral (the rotated
 // diamond groups in DIAGONAL mode) — walks each edge and lights/shadows it
 // based on how directly its own outward normal faces the light source.
-function applyPolygonEdgeGlow(corners, useA, depthAmt, shadowReach, tensionDepthMul, lightVec) {
+function applyPolygonEdgeGlow(corners, useA, depthAmt, shadowReach, tensionDepthMul, lightVec, lightIntensity) {
   const profileMul = currentProfile === 'round' ? 1.0 : currentProfile === 'ribbon' ? 0.82 : currentProfile === 'beveled' ? 1.12 : 0.58;
-  const peakBase = Math.max(0, Math.min(0.5, 0.27 * depthAmt * tensionDepthMul * profileMul * (useA ? 1.15 : 0.9)));
+  const peakBase = Math.max(0, Math.min(0.78, 0.42 * depthAmt * (0.75 + 0.25 * tensionDepthMul) * profileMul * (0.55 + 0.45 * (lightIntensity == null ? 1 : lightIntensity)) * (useA ? 1.15 : 0.9)));
   if (peakBase <= 0.002) return;
   const centroid = corners.reduce((a, c) => [a[0] + c[0] / corners.length, a[1] + c[1] / corners.length], [0, 0]);
   const edgeLen = Math.hypot(corners[1][0] - corners[0][0], corners[1][1] - corners[0][1]);
-  const reach = Math.max(1, edgeLen * 0.5 * Math.max(0.04, shadowReach));
+  const reach = Math.max(1, edgeLen * (0.08 + 0.55 * Math.max(0.04, shadowReach)));
 
   for (let i = 0; i < corners.length; i++) {
     const a = corners[i], b = corners[(i + 1) % corners.length];
@@ -669,27 +902,72 @@ function applyPolygonEdgeGlow(corners, useA, depthAmt, shadowReach, tensionDepth
 // boundary), this rotates the mesh grid itself by 45° so the bands genuinely cross
 // like real diagonal basketry — each "cell" is a diamond in screen space, clipped
 // and filled with the correctly-oriented (unrotated) photo content underneath.
+let diagonalMaskA = null;
+let diagonalMaskB = null;
+let diagonalLayer = null;
+
+function ensureDiagonalBuffers(w, h) {
+  function makeCanvas(old) {
+    const c = old || document.createElement('canvas');
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    return c;
+  }
+  diagonalMaskA = makeCanvas(diagonalMaskA);
+  diagonalMaskB = makeCanvas(diagonalMaskB);
+  diagonalLayer = makeCanvas(diagonalLayer);
+  return {
+    maskA: diagonalMaskA.getContext('2d'),
+    maskB: diagonalMaskB.getContext('2d'),
+    layer: diagonalLayer.getContext('2d')
+  };
+}
+
+// Draw an already output-sized source without ever supplying an out-of-range
+// source rectangle to drawImage().  This is deliberately used by DIAGONAL mode
+// because iOS/Safari can black out when thousands of clipped drawImage(sourceRect)
+// operations are issued near the canvas edges.
+function drawMappedDiagonalSource(targetCtx, source, w, h, scale, warpX, warpY) {
+  targetCtx.save();
+  targetCtx.translate(w / 2 - warpX, h / 2 - warpY);
+  targetCtx.scale(1 / Math.max(0.001, scale), 1 / Math.max(0.001, scale));
+  targetCtx.translate(-w / 2, -h / 2);
+  targetCtx.drawImage(source, 0, 0, w, h);
+  targetCtx.restore();
+}
+
+function paintDiagonalMaskedSource(source, maskCtx, layerCtx, w, h, scale, warpX, warpY) {
+  layerCtx.save();
+  layerCtx.setTransform(1, 0, 0, 1, 0, 0);
+  layerCtx.clearRect(0, 0, w, h);
+  drawMappedDiagonalSource(layerCtx, source, w, h, scale, warpX, warpY);
+  layerCtx.globalCompositeOperation = 'destination-in';
+  layerCtx.drawImage(maskCtx.canvas, 0, 0, w, h);
+  layerCtx.restore();
+  ctx.drawImage(layerCtx.canvas, 0, 0, w, h);
+}
+
+// DIAGONAL WEAVE — robust mask/composite renderer.
+// Instead of drawing a cropped source image for every diamond, this builds two
+// lightweight polygon masks and composites each photo only once per pass. This
+// keeps the actual diagonal basket geometry while avoiding Safari/iPhone canvas
+// blackouts caused by large numbers of edge-clipped source rectangles.
 function renderDiagonalWeave(p) {
-  const { mesh, zoomFactor, strandLength, depthAmt, shadowReach, lightVec, warpAmt, imperfAmt, density, tensionFactor, tensionSizeAdjust, tensionDepthMul, filterA, filterB, animationProgress, weaveProgress } = p;
+  const { sourceA, sourceB, mesh, zoomFactor, strandLength, depthAmt, shadowReach, lightVec, lightIntensity,
+    warpAmt, imperfAmt, density, tensionFactor, tensionDepthMul, reliefAmt, contactShadowAmt, specularAmt, surfaceBendAmt,
+    animationProgress, weaveProgress } = p;
   const w = outputCanvas.width, h = outputCanvas.height;
   const cx = w / 2, cy = h / 2;
-  const cosA = Math.SQRT1_2, sinA = Math.SQRT1_2; // 45°
-
+  const cosA = Math.SQRT1_2, sinA = Math.SQRT1_2;
   const diag = Math.sqrt(w * w + h * h);
-  const range = Math.ceil(diag / 2 / mesh) + 2;
+  const range = Math.ceil(diag / 2 / Math.max(1, mesh)) + 2;
+  const { maskA, maskB, layer } = ensureDiagonalBuffers(w, h);
 
-  // precompute cover-fit mapping (source <- canvas) once per photo, reused for every diamond's bounding box.
-  // zoomFactor (tied to MESH SIZE) scales past the normal cover-fit baseline so a wider mesh reads as more zoomed-in.
-  function coverMap(img) {
-    const ir = img.naturalWidth / img.naturalHeight;
-    const cr = w / h;
-    const baseScale = ir > cr ? img.naturalHeight / h : img.naturalWidth / w;
-    const scale = baseScale * zoomFactor;
-    const offX = (img.naturalWidth - w * scale) / 2;
-    const offY = (img.naturalHeight - h * scale) / 2;
-    return { scale, offX, offY };
-  }
-  const mapA = coverMap(imgA), mapB = coverMap(imgB);
+  maskA.setTransform(1,0,0,1,0,0);
+  maskB.setTransform(1,0,0,1,0,0);
+  maskA.clearRect(0,0,w,h);
+  maskB.clearRect(0,0,w,h);
+  maskA.fillStyle = '#fff';
+  maskB.fillStyle = '#fff';
 
   function boundsOf(corners) {
     const xs = corners.map(c => c[0]), ys = corners.map(c => c[1]);
@@ -700,151 +978,129 @@ function renderDiagonalWeave(p) {
     return { bx, by, bw: bxMax - bx, bh: byMax - by };
   }
 
-  // ── PASS 1 (UNDER layer): every diamond's crossing photo drawn first at its
-  // full, un-shrunk footprint — guarantees the strand that's "under" at a given
-  // crossing is always fully present, same rationale as the axis-aligned modes.
-  for (let row = -range; row <= range; row++) {
-    for (let col = -range; col <= range; col++) {
-      const u0 = row * mesh, v0 = col * mesh;
-      const gRow = Math.floor(row / strandLength);
-      const gCol = Math.floor(col / strandLength);
-      if (animationProgress != null && !shouldRevealCell(row + range, col + range, range * 2, range * 2, weaveProgress, 4)) continue;
-      let baseUseA = (gRow + gCol) % 2 === 0;
-      let useA = baseUseA;
-      if (density > 50 && !baseUseA) { if (seededRandom(gRow, gCol, 5) < (density - 50) / 50) useA = true; }
-      else if (density < 50 && baseUseA) { if (seededRandom(gRow, gCol, 5) < (50 - density) / 50) useA = false; }
+  function cellInfo(row, col) {
+    const u0 = row * mesh, v0 = col * mesh;
+    const gRow = Math.floor(row / strandLength);
+    const gCol = Math.floor(col / strandLength);
+    let baseUseA = (gRow + gCol) % 2 === 0;
+    let useA = baseUseA;
+    if (density > 50 && !baseUseA) {
+      if (seededRandom(gRow, gCol, 5) < (density - 50) / 50) useA = true;
+    } else if (density < 50 && baseUseA) {
+      if (seededRandom(gRow, gCol, 5) < (50 - density) / 50) useA = false;
+    }
+    const cornersUV = [[u0,v0],[u0+mesh,v0],[u0+mesh,v0+mesh],[u0,v0+mesh]];
+    const cornersXYBase = cornersUV.map(([u,v], i) => {
+      const jx = (seededRandom(row,col,10+i)-0.5) * 2 * imperfAmt;
+      const jy = (seededRandom(row,col,20+i)-0.5) * 2 * imperfAmt;
+      return [u*cosA - v*sinA + cx + jx, u*sinA + v*cosA + cy + jy];
+    });
+    const centroid = cornersXYBase.reduce((a,c)=>[a[0]+c[0]/4,a[1]+c[1]/4],[0,0]);
+    return { row, col, gRow, gCol, useA, cornersXYBase, centroid };
+  }
 
-      const cornersUV = [[u0, v0], [u0 + mesh, v0], [u0 + mesh, v0 + mesh], [u0, v0 + mesh]];
-      const cornersXYBase = cornersUV.map(([u, v], i) => {
-        const jx = (seededRandom(row, col, 10 + i) - 0.5) * 2 * imperfAmt;
-        const jy = (seededRandom(row, col, 20 + i) - 0.5) * 2 * imperfAmt;
-        return [u * cosA - v * sinA + cx + jx, u * sinA + v * cosA + cy + jy];
-      });
-      const centroid = cornersXYBase.reduce((a, c) => [a[0] + c[0] / 4, a[1] + c[1] / 4], [0, 0]);
-      const baseB = boundsOf(cornersXYBase);
-      if (baseB.bw <= 0 || baseB.bh <= 0) continue;
+  function reveal(row, col, passSeed) {
+    if (animationProgress == null) return true;
+    return shouldRevealCell(row + range, col + range, range * 2, range * 2, weaveProgress, passSeed);
+  }
 
-      const centerWarpX = warpAmt * Math.sin(centroid[1] * 0.05 + col);
-      const centerWarpY = warpAmt * Math.sin(centroid[0] * 0.05 + row);
-      const underMap = useA ? mapB : mapA;
-      const ubg = {
-        sx: underMap.offX + (baseB.bx + centerWarpX) * underMap.scale,
-        sy: underMap.offY + (baseB.by + centerWarpY) * underMap.scale,
-        sw: baseB.bw * underMap.scale, sh: baseB.bh * underMap.scale
-      };
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(cornersXYBase[0][0], cornersXYBase[0][1]);
-      for (let i = 1; i < cornersXYBase.length; i++) ctx.lineTo(cornersXYBase[i][0], cornersXYBase[i][1]);
-      ctx.closePath();
-      ctx.clip();
-      ctx.filter = useA ? filterB : filterA;
-      ctx.drawImage(useA ? imgB : imgA, ubg.sx, ubg.sy, ubg.sw, ubg.sh, baseB.bx, baseB.by, baseB.bw, baseB.bh);
-      ctx.filter = 'none';
-      ctx.restore();
+  function fillPolygon(maskCtx, corners) {
+    const b = boundsOf(corners);
+    if (b.bw <= 0 || b.bh <= 0) return false;
+    maskCtx.beginPath();
+    maskCtx.moveTo(corners[0][0], corners[0][1]);
+    for (let i=1;i<corners.length;i++) maskCtx.lineTo(corners[i][0], corners[i][1]);
+    maskCtx.closePath();
+    maskCtx.fill();
+    return true;
+  }
+
+  // PASS 1: under strands. The masks are disjoint by photo, so each source is
+  // composited only once after all of the geometry has been accumulated.
+  for (let row=-range; row<=range; row++) {
+    for (let col=-range; col<=range; col++) {
+      if (!reveal(row,col,4)) continue;
+      const c = cellInfo(row,col);
+      const target = c.useA ? maskB : maskA;
+      fillPolygon(target, c.cornersXYBase);
     }
   }
 
-  // ── PASS 2 (OVER layer): the crossing-winning photo, its diamond scaled up
-  // from a constant baseline (a real fold-over edge even at neutral tension) —
-  // TIGHT grows the overlap further, LOOSE shrinks it back toward (never past)
-  // the base diamond, always revealing the always-present under layer beneath.
-  for (let row = -range; row <= range; row++) {
-    for (let col = -range; col <= range; col++) {
-      const u0 = row * mesh, v0 = col * mesh;
-      // STRAND LENGTH groups neighboring diamonds into the same continuous segment,
-      // same rationale as basket/stripe below
-      const gRow = Math.floor(row / strandLength);
-      const gCol = Math.floor(col / strandLength);
-      if (animationProgress != null && !shouldRevealCell(row + range, col + range, range * 2, range * 2, weaveProgress, 5)) continue;
-      let baseUseA = (gRow + gCol) % 2 === 0;
-      let useA = baseUseA;
-      if (density > 50 && !baseUseA) {
-        if (seededRandom(gRow, gCol, 5) < (density - 50) / 50) useA = true;
-      } else if (density < 50 && baseUseA) {
-        if (seededRandom(gRow, gCol, 5) < (50 - density) / 50) useA = false;
-      }
+  // PASS 1 compositing. Default scale=1 is an exact screen-space mapping.
+  paintDiagonalMaskedSource(sourceA, maskA, layer, w, h, zoomFactor, 0, 0);
+  paintDiagonalMaskedSource(sourceB, maskB, layer, w, h, zoomFactor, 0, 0);
 
-      // diamond corners: rotated-grid square -> screen space, with IMPERFECTION
-      // jittering each corner individually (uneven hand-woven edges) and TENSION
-      // scaling the whole diamond from its centroid (tight = overlapping/sealed, loose = gaps)
-      const cornersUV = [[u0, v0], [u0 + mesh, v0], [u0 + mesh, v0 + mesh], [u0, v0 + mesh]];
-      const cornersXYBase = cornersUV.map(([u, v], i) => {
-        const jx = (seededRandom(row, col, 10 + i) - 0.5) * 2 * imperfAmt;
-        const jy = (seededRandom(row, col, 20 + i) - 0.5) * 2 * imperfAmt;
-        return [u * cosA - v * sinA + cx + jx, u * sinA + v * cosA + cy + jy];
-      });
-      const centroid = cornersXYBase.reduce((a, c) => [a[0] + c[0] / 4, a[1] + c[1] / 4], [0, 0]);
-      const tensionScale = 1.16 + tensionFactor * 0.22; // 1.16 baseline overlap at neutral tension
-      const cornersXY = cornersXYBase.map(([x, y]) => [
-        centroid[0] + (x - centroid[0]) * tensionScale,
-        centroid[1] + (y - centroid[1]) * tensionScale
+  // Clear masks for PASS 2.
+  maskA.clearRect(0,0,w,h);
+  maskB.clearRect(0,0,w,h);
+  const tensionScale = 1.16 + tensionFactor * 0.22;
+  const edgeGroups = [];
+
+  // PASS 2: over strands. Enlarging each diamond creates the visible fold-over
+  // at crossings. The resulting masks naturally occlude the under layer.
+  for (let row=-range; row<=range; row++) {
+    for (let col=-range; col<=range; col++) {
+      if (!reveal(row,col,5)) continue;
+      const c = cellInfo(row,col);
+      const cornersXY = c.cornersXYBase.map(([x,y]) => [
+        c.centroid[0] + (x-c.centroid[0])*tensionScale,
+        c.centroid[1] + (y-c.centroid[1])*tensionScale
       ]);
+      const target = c.useA ? maskA : maskB;
+      if (!fillPolygon(target, cornersXY)) continue;
 
-      const baseB = boundsOf(cornersXYBase);
-      if (baseB.bw <= 0 || baseB.bh <= 0) continue; // diamond entirely off-canvas, skip
-
-      const centerWarpX = warpAmt * Math.sin(centroid[1] * 0.05 + col);
-      const centerWarpY = warpAmt * Math.sin(centroid[0] * 0.05 + row);
-
-      function sampleFor(map, bx, by, bw, bh) {
-        return {
-          sx: map.offX + (bx + centerWarpX) * map.scale,
-          sy: map.offY + (by + centerWarpY) * map.scale,
-          sw: bw * map.scale, sh: bh * map.scale
-        };
-      }
-
-      const fgBounds = boundsOf(cornersXY);
-      const { bx, by, bw, bh } = fgBounds;
-      if (bw <= 0 || bh <= 0) continue;
-
-      const map = useA ? mapA : mapB;
-      const fg = sampleFor(map, bx, by, bw, bh);
-      const sx = fg.sx, sy = fg.sy, sw = fg.sw, sh = fg.sh;
-
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(cornersXY[0][0], cornersXY[0][1]);
-      for (let i = 1; i < cornersXY.length; i++) ctx.lineTo(cornersXY[i][0], cornersXY[i][1]);
-      ctx.closePath();
-      ctx.clip();
-      ctx.filter = useA ? filterA : filterB;
-      ctx.drawImage(useA ? imgA : imgB, sx, sy, sw, sh, bx, by, bw, bh);
-      ctx.filter = 'none';
-      ctx.restore();
-
-      // group-level shadow: drawn once per group (from its anchor diamond), clipped
-      // to the BIG group diamond's own path (not the small per-cell one) so the glow
-      // hugs the group's true outer edge instead of stacking a blob on every sub-cell
-      const isGroupAnchor = row % strandLength === 0 && col % strandLength === 0;
-      if (depthAmt > 0 && isGroupAnchor) {
+      if (depthAmt > 0 && row % strandLength === 0 && col % strandLength === 0) {
         const gu0 = row * mesh, gv0 = col * mesh;
         const gSize = strandLength * mesh;
-        const groupCornersUV = [[gu0, gv0], [gu0 + gSize, gv0], [gu0 + gSize, gv0 + gSize], [gu0, gv0 + gSize]];
-        let groupCorners = groupCornersUV.map(([u, v]) => [u * cosA - v * sinA + cx, u * sinA + v * cosA + cy]);
-        const gCentroid = groupCorners.reduce((a, c) => [a[0] + c[0] / 4, a[1] + c[1] / 4], [0, 0]);
-        groupCorners = groupCorners.map(([x, y]) => [
-          gCentroid[0] + (x - gCentroid[0]) * tensionScale,
-          gCentroid[1] + (y - gCentroid[1]) * tensionScale
+        const groupCornersUV = [[gu0,gv0],[gu0+gSize,gv0],[gu0+gSize,gv0+gSize],[gu0,gv0+gSize]];
+        let groupCorners = groupCornersUV.map(([u,v]) => [u*cosA-v*sinA+cx,u*sinA+v*cosA+cy]);
+        const gCentroid = groupCorners.reduce((a,cc)=>[a[0]+cc[0]/4,a[1]+cc[1]/4],[0,0]);
+        groupCorners = groupCorners.map(([x,y])=>[
+          gCentroid[0] + (x-gCentroid[0])*tensionScale,
+          gCentroid[1] + (y-gCentroid[1])*tensionScale
         ]);
-        ctx.save();
-        ctx.beginPath();
-        ctx.moveTo(groupCorners[0][0], groupCorners[0][1]);
-        for (let i = 1; i < groupCorners.length; i++) ctx.lineTo(groupCorners[i][0], groupCorners[i][1]);
-        ctx.closePath();
-        ctx.clip();
-        applyPolygonEdgeGlow(groupCorners, useA, depthAmt, shadowReach, tensionDepthMul, lightVec);
-        ctx.restore();
+        edgeGroups.push({ corners: groupCorners, useA: c.useA });
       }
+    }
+  }
+
+  paintDiagonalMaskedSource(sourceA, maskA, layer, w, h, zoomFactor, 0, 0);
+  paintDiagonalMaskedSource(sourceB, maskB, layer, w, h, zoomFactor, 0, 0);
+
+  // Keep the existing physical-depth lighting language, but do it only once per
+  // strand group after the two image composites, avoiding per-cell canvas work.
+  if (depthAmt > 0 || reliefAmt > 0) {
+    for (const g of edgeGroups) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(g.corners[0][0],g.corners[0][1]);
+      for (let i=1;i<g.corners.length;i++) ctx.lineTo(g.corners[i][0],g.corners[i][1]);
+      ctx.closePath();
+      ctx.clip();
+      if (depthAmt > 0) applyPolygonEdgeGlow(g.corners, g.useA, depthAmt, shadowReach, tensionDepthMul, lightVec, lightIntensity);
+      applySurfaceReliefPolygon(g.corners, g.useA, reliefAmt, contactShadowAmt, specularAmt, surfaceBendAmt, lightVec, lightIntensity, shadowReach);
+      ctx.restore();
     }
   }
 }
 
+
 [meshSlider, strandLengthSlider, warpSlider, imperfectionSlider, densitySlider, tensionSlider, depthAmtSlider, shadowReachSlider, lightDirectionSlider, grainSlider, lightIntensitySlider,
+ reliefSlider, contactShadowSlider, specularSlider, surfaceBendSlider,
  exposureASlider, brillianceASlider, exposureBSlider, brillianceBSlider].forEach(el => {
   el.addEventListener('input', () => {
-    if (animationPlaying) stopAnimation();
+    // After the first weave animation, parameter changes are live edits.
+    // Never send the user back through the generation animation just because
+    // Photo A/B exposure or brilliance (or another slider) changed.
+    if (animationPlaying) {
+      if (animationFrame) cancelAnimationFrame(animationFrame);
+      animationFrame = 0;
+      animationPlaying = false;
+      animationProgress = null;
+      compositionReady = true;
+      hasAnimatedOnce = true;
+    }
+    // Before the first PLAY WEAVE, keep the composition locked.
     if (!hasAnimatedOnce) compositionReady = false;
     updateAnimationUI();
     meshVal.textContent = meshSlider.value;
@@ -858,6 +1114,10 @@ function renderDiagonalWeave(p) {
     lightDirectionVal.textContent = lightDirectionSlider.value + '°';
     grainVal.textContent = grainSlider.value + '%';
     lightIntensityVal.textContent = lightIntensitySlider.value + '%';
+    reliefVal.textContent = reliefSlider.value + '%';
+    contactShadowVal.textContent = contactShadowSlider.value + '%';
+    specularVal.textContent = specularSlider.value + '%';
+    surfaceBendVal.textContent = surfaceBendSlider.value + '%';
     exposureAVal.textContent = exposureASlider.value;
     brillianceAVal.textContent = brillianceASlider.value;
     exposureBVal.textContent = exposureBSlider.value;
@@ -874,6 +1134,7 @@ resetBtn.addEventListener('click', () => {
   meshSlider.value = 40; strandLengthSlider.value = 1; depthAmtSlider.value = 60; shadowReachSlider.value = 75; warpSlider.value = 0;
   lightDirectionSlider.value = 45; grainSlider.value = 0;
   imperfectionSlider.value = 15; densitySlider.value = 50; tensionSlider.value = 50;
+  reliefSlider.value = 72; contactShadowSlider.value = 68; specularSlider.value = 24; surfaceBendSlider.value = 18;
   backlightToggle.checked = false; lightIntensitySlider.value = 50;
   zoomWithMeshToggle.checked = false;
   exposureASlider.value = 0; brillianceASlider.value = 0;
@@ -884,6 +1145,7 @@ resetBtn.addEventListener('click', () => {
   currentProfile = 'round';
   profileBtns.forEach(b => b.classList.toggle('active', b.dataset.profile === 'round'));
   [meshSlider, strandLengthSlider, warpSlider, imperfectionSlider, densitySlider, tensionSlider, depthAmtSlider, shadowReachSlider, lightDirectionSlider, grainSlider, lightIntensitySlider,
+   reliefSlider, contactShadowSlider, specularSlider, surfaceBendSlider,
    exposureASlider, brillianceASlider, exposureBSlider, brillianceBSlider]
     .forEach(el => el.dispatchEvent(new Event('input')));
   render();
@@ -893,19 +1155,6 @@ function isIOS() {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 }
 
-downloadBtn.addEventListener('click', () => {
-  if (!hasA || !hasB) return;
-  const dataUrl = outputCanvas.toDataURL('image/png');
-  if (isIOS()) {
-    document.getElementById('saveOverlayImg').src = dataUrl;
-    document.getElementById('saveOverlay').style.display = 'flex';
-  } else {
-    const a = document.createElement('a');
-    a.href = dataUrl;
-    a.download = 'woven-grain.png';
-    a.click();
-  }
-});
 document.getElementById('saveOverlayClose').addEventListener('click', () => {
   document.getElementById('saveOverlay').style.display = 'none';
 });
@@ -920,4 +1169,431 @@ window.addEventListener('resize', () => {
 
 updateAnimationUI();
 updateAnimationUI();
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WOVEN GRAIN — LIGHTWEIGHT TRUE 3D ENGINE
+// Keeps the existing 2D engine as a fallback, but adds a real WebGL surface:
+// two families of cylindrical/ribbon strands physically cross above/below one
+// another. The image is used as a material texture, while depth/light/shadow are
+// actual 3D parameters rather than painted 2D gradients.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const webglCanvas = document.getElementById('webglCanvas');
+const renderEngineBtns = document.querySelectorAll('[data-engine]');
+let renderEngine = '3d';
+let threeState = null;
+let threeAvailable = false;
+
+function isMobileDevice() {
+  return window.matchMedia && window.matchMedia('(max-width: 860px)').matches;
+}
+
+function setRenderEngine(mode) {
+  if (mode === '3d' && !threeAvailable) mode = '2d';
+  renderEngine = mode;
+  document.body.classList.toggle('woven-3d', mode === '3d');
+  document.body.classList.toggle('woven-2d', mode === '2d');
+  renderEngineBtns.forEach(b => b.classList.toggle('active', b.dataset.engine === mode));
+  if (threeState && mode === '3d') resizeThree();
+  render();
+}
+
+renderEngineBtns.forEach(btn => btn.addEventListener('click', () => setRenderEngine(btn.dataset.engine)));
+
+function makeThreeTexture(source) {
+  const tex = new THREE.CanvasTexture(source);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.anisotropy = Math.min(4, threeState?.renderer?.capabilities?.getMaxAnisotropy?.() || 1);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function makeProfileGeometry(profile, length, width, depth) {
+  const safeLength = Math.max(2, length);
+  const safeWidth = Math.max(1.2, width);
+  const safeDepth = Math.max(0.8, depth);
+  if (profile === 'round') {
+    // A low-poly cylinder is intentional: it is much cheaper on mobile and still
+    // produces real curved highlights and a readable circular section.
+    return new THREE.CylinderGeometry(safeWidth * 0.5, safeWidth * 0.5, safeLength, isMobileDevice() ? 8 : 12, 1, false);
+  }
+  if (profile === 'ribbon') {
+    return new THREE.BoxGeometry(safeLength, safeDepth, safeWidth, 1, 1, 1);
+  }
+  if (profile === 'beveled') {
+    // Hexagonal prism: a cheap physical approximation of a chamfered strip.
+    return new THREE.CylinderGeometry(safeWidth * 0.5, safeWidth * 0.5, safeLength, 6, 1, false);
+  }
+  // Flat = a thin rectangular strip.
+  return new THREE.BoxGeometry(safeLength, safeDepth * 0.65, safeWidth, 1, 1, 1);
+}
+
+function disposeObject(obj) {
+  if (!obj) return;
+  if (obj.geometry) obj.geometry.dispose();
+  if (obj.material) {
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    mats.forEach(m => {
+      if (m.map) m.map.dispose();
+      m.dispose();
+    });
+  }
+}
+
+function clearThreeGroup(group) {
+  if (!group) return;
+  while (group.children.length) group.remove(group.children[group.children.length - 1]);
+}
+
+function initThree() {
+  if (!webglCanvas || !window.THREE) return false;
+  try {
+    const renderer = new THREE.WebGLRenderer({
+      canvas: webglCanvas,
+      antialias: !isMobileDevice(),
+      alpha: false,
+      preserveDrawingBuffer: true,
+      powerPreference: 'high-performance'
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isMobileDevice() ? 1.35 : 1.75));
+    renderer.setSize(700, 500, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.setClearColor(0x000000, 1);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(30, 700 / 500, 1, 2500);
+    camera.position.set(0, 0, 900);
+    camera.lookAt(0, 0, 0);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 1.25);
+    scene.add(ambient);
+    const key = new THREE.DirectionalLight(0xfff5df, 2.2);
+    key.position.set(-280, 320, 650);
+    key.castShadow = true;
+    key.shadow.mapSize.set(isMobileDevice() ? 256 : 512, isMobileDevice() ? 256 : 512);
+    key.shadow.camera.left = -420; key.shadow.camera.right = 420;
+    key.shadow.camera.top = 320; key.shadow.camera.bottom = -320;
+    key.shadow.camera.near = 1; key.shadow.camera.far = 1800;
+    scene.add(key);
+
+    const fill = new THREE.DirectionalLight(0x9fb9d5, 0.42);
+    fill.position.set(300, -180, 480);
+    scene.add(fill);
+
+    const root = new THREE.Group();
+    scene.add(root);
+    const strandGroup = new THREE.Group();
+    root.add(strandGroup);
+
+    // A shallow receiving plane makes contact shadows readable without needing a
+    // full environment map. It stays behind the weave and is almost black.
+    const backGeo = new THREE.PlaneGeometry(760, 560);
+    const backMat = new THREE.MeshStandardMaterial({ color: 0x070707, roughness: 0.98, metalness: 0 });
+    const backPlane = new THREE.Mesh(backGeo, backMat);
+    backPlane.position.z = -38;
+    backPlane.receiveShadow = true;
+    scene.add(backPlane);
+
+    threeState = { renderer, scene, camera, ambient, key, fill, root, strandGroup, backPlane, lastSignature: '', texA: null, texB: null, texC: null, sharedGeo: null, matA: null, matB: null };
+    resizeThree();
+    return true;
+  } catch (err) {
+    console.warn('Woven Grain 3D init failed; using 2D fallback.', err);
+    threeState = null;
+    return false;
+  }
+}
+
+function resizeThree() {
+  if (!threeState || !webglCanvas) return;
+  const rect = webglCanvas.getBoundingClientRect();
+  const cssW = Math.max(1, rect.width || 700);
+  const cssH = Math.max(1, rect.height || 500);
+  const w = 700, h = 500;
+  threeState.renderer.setSize(w, h, false);
+  threeState.camera.aspect = w / h;
+  threeState.camera.updateProjectionMatrix();
+}
+
+function updateThreeLight(lightVec, intensity) {
+  if (!threeState) return;
+  const ang = Math.atan2(lightVec.y, lightVec.x);
+  const distance = 720;
+  // Screen-space light direction -> world-space light position.
+  threeState.key.position.set(Math.cos(ang) * distance, Math.sin(ang) * distance, 620);
+  threeState.key.intensity = 1.15 + intensity * 2.1;
+  threeState.key.userData.baseIntensity = threeState.key.intensity;
+  threeState.fill.intensity = 0.18 + intensity * 0.48;
+  threeState.ambient.intensity = 0.72 + intensity * 0.55;
+}
+
+function buildThreeWeave() {
+  if (!threeState || !filteredSourceA || !filteredSourceB || !hasA || !hasB) return;
+  const w = outputCanvas.width, h = outputCanvas.height;
+  const mesh = parseInt(meshSlider.value, 10);
+  const depthAmt = parseInt(depthAmtSlider.value, 10) / 100;
+  const shadowReach = parseInt(shadowReachSlider.value, 10) / 100;
+  const lightDir = parseInt(lightDirectionSlider.value, 10);
+  const lightRad = (lightDir - 90) * Math.PI / 180;
+  const lightVec = { x: Math.cos(lightRad), y: Math.sin(lightRad) };
+  const tension = parseInt(tensionSlider.value, 10) / 100;
+  const imperf = parseInt(imperfectionSlider.value, 10) / 100;
+  const warp = parseInt(warpSlider.value, 10) / 100;
+  const relief = parseInt(reliefSlider.value, 10) / 100;
+  const contact = parseInt(contactShadowSlider.value, 10) / 100;
+  const specular = parseInt(specularSlider.value, 10) / 100;
+  const surfaceBend = parseInt(surfaceBendSlider.value, 10) / 100;
+  const lightIntensity = parseInt(lightIntensitySlider.value, 10) / 100;
+  const density = parseInt(densitySlider.value, 10) / 100;
+  const strandLength = parseInt(strandLengthSlider.value, 10);
+  const zoomFactor = zoomWithMeshToggle.checked ? Math.max(1, mesh / 40) : 1;
+
+  // The 3D prototype intentionally keeps the number of physical strands bounded.
+  // On phones we cap density by reducing segment count, not by making the geometry
+  // fake. Each segment still has a real z-position at every crossing.
+  const mobile = isMobileDevice();
+  const maxStrands = mobile ? 10 : 14;
+  const step = Math.max(mesh, Math.ceil(Math.max(w, h) / maxStrands));
+  const cols = Math.ceil(w / step);
+  const rows = Math.ceil(h / step);
+  const planeW = 640;
+  const planeH = 640 * (h / w);
+  const sx = planeW / w;
+  const sy = planeH / h;
+  const zBase = -12;
+  const radius = Math.max(3, step * (0.13 + depthAmt * 0.075 + relief * 0.035));
+  const lift = radius * (0.62 + depthAmt * 1.25) * (0.65 + tension * 0.7);
+  const gap = radius * (0.18 + (1 - tension) * 0.45);
+  const bend = surfaceBend * 12;
+  const shadowMapEnabled = contact > 0.04;
+
+  clearThreeGroup(threeState.strandGroup);
+  if (threeState.sharedGeo) threeState.sharedGeo.dispose();
+  if (threeState.matA) threeState.matA.dispose();
+  if (threeState.matB) threeState.matB.dispose();
+  threeState.sharedGeo = null;
+  threeState.matA = null;
+  threeState.matB = null;
+  threeState.backPlane.visible = !!(backlightToggle.checked && hasC);
+  threeState.backPlane.material.color.setHex(0x080808);
+
+  if (threeState.texA) threeState.texA.dispose();
+  if (threeState.texB) threeState.texB.dispose();
+  threeState.texA = makeThreeTexture(filteredSourceA);
+  threeState.texB = makeThreeTexture(filteredSourceB);
+
+  const common = {
+    roughness: Math.max(0.28, 0.92 - specular * 0.62),
+    metalness: 0.02,
+    envMapIntensity: 0.35 + specular * 0.65
+  };
+
+  function strandMaterial(tex) {
+    return new THREE.MeshStandardMaterial({
+      ...common,
+      map: tex,
+      color: 0xffffff,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 1,
+    });
+  }
+
+  const profileWidth = step * (0.58 + (1 - tension) * 0.10);
+  const profileDepth = Math.max(2.0, radius * (currentProfile === 'flat' ? 0.62 : currentProfile === 'ribbon' ? 1.15 : 1.0));
+  const sharedLength = step + gap * 2.0 + radius * 0.9;
+  threeState.sharedGeo = makeProfileGeometry(currentProfile, sharedLength, profileWidth, profileDepth);
+  threeState.matA = strandMaterial(threeState.texA);
+  threeState.matB = strandMaterial(threeState.texB);
+
+  // Keep photo A as one physical strand family and photo B as the crossing family.
+  // This makes the two-source relationship legible as actual woven material rather
+  // than a checkerboard of flat tiles.
+  const dir = currentDirection;
+  const horizontalFirst = dir !== 'diagonal';
+  const sourceRows = rows + 1;
+  const sourceCols = cols + 1;
+  const halfW = planeW / 2, halfH = planeH / 2;
+
+  function addSegment(sourceTex, horizontal, rowIndex, colIndex, segmentIndex, totalSegments, isA) {
+    const x0 = -halfW + colIndex * step * sx;
+    const x1 = Math.min(halfW, x0 + step * sx);
+    const y0 = -halfH + rowIndex * step * sy;
+    const y1 = Math.min(halfH, y0 + step * sy);
+    const segLen = horizontal ? Math.max(8, x1 - x0 + radius * 0.9) : Math.max(8, y1 - y0 + radius * 0.9);
+    const localParity = (rowIndex + colIndex + (isA ? 0 : 1)) & 1;
+    let z = zBase + (localParity === 0 ? lift : -lift);
+    // Small, deterministic material irregularity; never enough to break contact.
+    const j = (seededRandom(rowIndex, colIndex, 501) - 0.5) * imperf * step * 0.22;
+    const bendOffset = surfaceBend > 0.001 ? Math.sin((horizontal ? x0 : y0) * 0.018 + (horizontal ? rowIndex : colIndex)) * bend : 0;
+    z += j + bendOffset;
+
+    const meshObj = new THREE.Mesh(threeState.sharedGeo, isA ? threeState.matA : threeState.matB);
+    const cylinderProfile = currentProfile === 'round' || currentProfile === 'beveled';
+    const lengthScale = (segLen + gap * 2.0) / sharedLength;
+    // Scale along the geometry's local long axis; rotation below then places it
+    // horizontally or vertically in world space.
+    meshObj.scale.set(cylinderProfile ? 1 : lengthScale, cylinderProfile ? lengthScale : 1, 1);
+
+    const cx = horizontal ? (x0 + x1) * 0.5 : (rowIndex * 0 - halfW + colIndex * step * sx);
+    const cy = horizontal ? (-halfH + rowIndex * step * sy) : (y0 + y1) * 0.5;
+    meshObj.position.set(horizontal ? cx : (-halfW + colIndex * step * sx), horizontal ? cy : cy, z);
+    meshObj.rotation.set(0, 0, 0);
+    // CylinderGeometry is Y-axis aligned; BoxGeometry is X-axis aligned.
+    // Rotate only the profile that needs it so Round and Ribbon both keep the
+    // intended physical orientation.
+    if (horizontal) meshObj.rotation.z = cylinderProfile ? Math.PI / 2 : 0;
+    else meshObj.rotation.z = cylinderProfile ? 0 : Math.PI / 2;
+
+    // Slight local warping makes the surface feel manufactured rather than CAD-perfect.
+    const wx = warp * Math.sin((rowIndex + 1) * 1.7) * 4;
+    const wy = warp * Math.sin((colIndex + 1) * 1.9) * 4;
+    meshObj.position.x += horizontal ? wx : 0;
+    meshObj.position.y += horizontal ? 0 : wy;
+
+    meshObj.castShadow = shadowMapEnabled;
+    meshObj.receiveShadow = true;
+    const revealBase = shouldRevealCell(rowIndex, colIndex, rows, cols, 1, horizontal ? 12 : 29);
+    meshObj.userData.revealThreshold = revealBase ? (
+      ((Math.max(0, rowIndex) * (cols + 1) + (rowIndex % 2 === 0 ? Math.max(0, colIndex) : Math.max(0, cols - colIndex))) / Math.max(1, (rows + 1) * (cols + 1) - 1))
+    ) : 1;
+    threeState.strandGroup.add(meshObj);
+  }
+
+  // Build enough segments for a real alternating over/under weave, while keeping
+  // the object count deliberately low for iPhone/iPad GPUs.
+  for (let r = 0; r <= rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      addSegment(threeState.texA, true, r, c, c, cols, true);
+    }
+  }
+  for (let c = 0; c <= cols; c++) {
+    for (let r = 0; r < rows; r++) {
+      addSegment(threeState.texB, false, r, c, r, rows, false);
+    }
+  }
+
+  // Direction variants: the true 3D engine keeps the same physical weave but
+  // rotates the whole surface for Diagonal, and uses a reduced family for Stripe.
+  threeState.root.rotation.z = dir === 'diagonal' ? Math.PI / 4 : 0;
+  if (dir === 'stripe') {
+    // Stripe remains a one-direction weave: lower the B family into the surface.
+    threeState.strandGroup.children.forEach((o, i) => {
+      if (i % 2 === 0) o.position.z += lift * 0.12;
+      else o.position.z -= lift * 0.18;
+    });
+  }
+
+  // Camera tilt sells the actual surface depth without turning the app into a 3D viewer.
+  const tilt = 0.08 + depthAmt * 0.16;
+  threeState.camera.position.set(0, -planeH * tilt * 0.42, 900);
+  threeState.camera.lookAt(0, 0, 0);
+  threeState.backPlane.position.set(0, 0, -44 - shadowReach * 18);
+
+  updateThreeLight(lightVec, lightIntensity);
+}
+
+function updateThreeAnimationState() {
+  if (!threeState) return;
+  const p = animationProgress;
+  const visibleP = p === null ? 1 : Math.max(0, Math.min(1, p));
+  threeState.strandGroup.children.forEach((obj, i) => {
+    const t = Number(obj.userData.revealThreshold) || 0;
+    obj.visible = visibleP >= t;
+    if (p !== null && visibleP < 0.96) {
+      const form = Math.max(0, (visibleP - 0.67) / 0.29);
+      const s = 0.72 + form * 0.28;
+      obj.scale.z = s;
+    } else {
+      obj.scale.z = 1;
+    }
+  });
+  // Light is introduced only during the LIGHT phase of the existing animation.
+  if (threeState.key) {
+    const lightP = p === null ? 1 : Math.max(0, Math.min(1, (visibleP - 0.84) / 0.12));
+    const base = Number(threeState.key.userData.baseIntensity) || 1.5;
+    threeState.key.intensity = base * (0.45 + lightP * 0.55);
+  }
+}
+
+function renderThree() {
+  if (!threeState || !hasA || !hasB) return;
+  const w = outputCanvas.width, h = outputCanvas.height;
+  const filterA = photoFilter(parseInt(exposureASlider.value, 10), parseInt(brillianceASlider.value, 10));
+  const filterB = photoFilter(parseInt(exposureBSlider.value, 10), parseInt(brillianceBSlider.value, 10));
+  updatePreviews(filterA, filterB);
+  const sources = getFilteredSources(w, h);
+  if (!sources.A || !sources.B) return;
+  const signature = [
+    meshSlider.value, strandLengthSlider.value, currentDirection, currentProfile,
+    depthAmtSlider.value, shadowReachSlider.value, lightDirectionSlider.value,
+    warpSlider.value, imperfectionSlider.value, densitySlider.value, tensionSlider.value,
+    reliefSlider.value, contactShadowSlider.value, specularSlider.value, surfaceBendSlider.value,
+    exposureASlider.value, brillianceASlider.value, exposureBSlider.value, brillianceBSlider.value,
+    zoomWithMeshToggle.checked ? 1 : 0, isMobileDevice() ? 1 : 0
+  ].join('|');
+  if (threeState.lastSignature !== signature) {
+    buildThreeWeave();
+    threeState.lastSignature = signature;
+  }
+  updateThreeAnimationState();
+  const grain = parseInt(grainSlider.value, 10) / 100;
+  // Grain is intentionally left to the existing 2D engine. Keeping the WebGL
+  // surface clean avoids an expensive full-frame readback on every slider move.
+  threeState.renderer.render(threeState.scene, threeState.camera);
+  if (grain > 0.001) {
+    webglCanvas.style.filter = `contrast(${1 + grain * 0.08})`;
+  } else {
+    webglCanvas.style.filter = 'none';
+  }
+}
+
+const originalRender = render;
+render = function wovenRender() {
+  if (renderEngine === '3d' && threeAvailable && hasA && hasB) {
+    canvasHint.style.display = 'none';
+    downloadBtn.disabled = !compositionReady;
+    renderThree();
+  } else {
+    originalRender();
+  }
+};
+
+function downloadCurrentRender() {
+  if (!hasA || !hasB || !compositionReady) return;
+  const sourceCanvas = renderEngine === '3d' && threeAvailable ? webglCanvas : outputCanvas;
+  const dataUrl = sourceCanvas.toDataURL('image/png');
+  if (isIOS()) {
+    document.getElementById('saveOverlayImg').src = dataUrl;
+    document.getElementById('saveOverlay').style.display = 'flex';
+  } else {
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = renderEngine === '3d' ? 'woven-grain-3d.png' : 'woven-grain.png';
+    a.click();
+  }
+}
+downloadBtn.addEventListener('click', downloadCurrentRender);
+
+threeAvailable = !!initThree();
+if (!threeAvailable) {
+  renderEngine = '2d';
+  document.body.classList.add('woven-2d');
+}
+setRenderEngine(renderEngine);
+
+window.addEventListener('resize', () => {
+  if (renderEngine === '3d') {
+    resizeThree();
+    render();
+  }
+});
+
+// The existing final call is intentionally replaced here so the 3D engine starts
+// immediately but still falls back to the original renderer before two photos exist.
 render();

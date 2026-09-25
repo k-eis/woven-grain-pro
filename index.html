@@ -126,6 +126,9 @@ h1 .jp { font-size: 15px; color: var(--muted); font-weight: 400; margin-left: 10
 .play-overlay:disabled{opacity:.28;cursor:default}
 .play-overlay:not(:disabled):hover{background:rgba(18,18,18,.92)}
 canvas#outputCanvas { max-width: 100%; max-height: 560px; display: block; }
+canvas#webglCanvas { max-width:100%; max-height:560px; width:700px; height:500px; display:block; }
+body.woven-3d canvas#outputCanvas { display:none; }
+body.woven-2d canvas#webglCanvas { display:none; }
 .canvas-badge { position: absolute; top: 14px; left: 14px; font: 500 9px/1 var(--mono); color: #f0ede0; background: rgba(0,0,0,0.45); padding: 4px 8px; border: 1px solid rgba(255,255,255,0.15); letter-spacing: 0.08em; display: none; }
 .hint { font: 400 9px/1.6 var(--mono); color: var(--muted); text-align: center; letter-spacing: 0.06em; }
 
@@ -167,6 +170,9 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
   h1 { font-size: 24px; }
   h1 .jp { display: block; margin-left: 0; margin-top: 4px; }
   .stage { grid-template-columns: 1fr; border: none; }
+  /* Mobile: keep Photo A/B previews compact so their controls remain easy to reach. */
+  .dual-drop { max-width: 300px; gap: 8px; }
+  .mini-drop { max-width: 146px; }
   .canvas-area { border: 1px solid var(--line-strong); border-bottom: none; min-height: 220px; top: 0; z-index: 20; }
   canvas#outputCanvas { max-height: 42vh; }
   .controls { border: 1px solid var(--line-strong); border-top: none; padding: 18px 16px; }
@@ -183,7 +189,11 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
 .profile-btn:hover{border-color:var(--accent);color:var(--text)}
 .profile-btn.active{border-color:var(--accent);color:var(--accent);background:rgba(255,255,255,.06);box-shadow:inset 0 0 0 1px rgba(255,255,255,.04)}
 .profile-btn:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
-@media(max-width:700px){.profile-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:700px){
+  .profile-grid{grid-template-columns:repeat(2,1fr)}
+  .dual-drop{max-width:270px;gap:7px}
+  .mini-drop{aspect-ratio:1;flex:none;width:calc((100% - 7px) / 2)}
+}
 </style>
 </head>
 <body>
@@ -229,6 +239,7 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
       </div>
       <div class="output-stage" id="outputStage">
         <canvas id="outputCanvas" width="700" height="500"></canvas>
+      <canvas id="webglCanvas" width="700" height="500" aria-label="3D woven preview"></canvas>
         <button class="play-overlay" id="playOverlayBtn" disabled>
           <span>PLAY WEAVE</span>
           <small>2枚の写真を編み始める</small>
@@ -265,6 +276,17 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
           <div class="select-btn" data-direction="stripe">Stripe</div>
           <div class="select-btn active" data-direction="basket">Basket</div>
           <div class="select-btn" data-direction="diagonal">Diagonal</div>
+        </div>
+      </div>
+
+      <div class="ctrl-group">
+        <div class="ctrl-label"><span class="name">RENDER ENGINE <span class="jp-small">描画方式</span></span></div>
+        <div class="select-grid" id="renderEngineOptions" style="grid-template-columns:1fr 1fr;">
+          <div class="select-btn" data-engine="2d">2D</div>
+          <div class="select-btn active" data-engine="3d">3D</div>
+        </div>
+        <div style="font:400 9px/1.5 var(--mono); color:var(--muted); margin-top:8px;">
+          3DはGPUを使った軽量な立体編み込み。スマートフォンでは自動的に低負荷設定になります。
         </div>
       </div>
 
@@ -445,6 +467,7 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
   <div class="closeBtn" id="saveOverlayClose">閉じる</div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.min.js"></script>
 <script src="woven-grain.js"></script>
 </body>
 </html>
