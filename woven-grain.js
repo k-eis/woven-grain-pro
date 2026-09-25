@@ -1193,27 +1193,29 @@ function setEngineStatus(message) {
   if (engineStatus) engineStatus.textContent = message;
 }
 
-function loadThreeLibrary() {
-  if (window.THREE) return Promise.resolve(true);
+async function loadThreeLibrary() {
+  if (window.THREE) return true;
   if (threeLoadPromise) return threeLoadPromise;
   threeLoading = true;
   setEngineStatus('3Dエンジンを読み込んでいます…');
-  threeLoadPromise = new Promise(resolve => {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js';
-    script.async = true;
-    script.onload = () => {
+  threeLoadPromise = import('https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js')
+    .then(mod => {
+      window.THREE = mod;
       threeLoading = false;
       threeAvailable = !!window.THREE && !!initThree();
-      resolve(threeAvailable);
-    };
-    script.onerror = () => {
+      if (!threeAvailable && threeInitError) {
+        const detail = threeInitError && threeInitError.message ? ` (${threeInitError.message})` : '';
+        setEngineStatus('3Dを初期化できませんでした。' + detail);
+      }
+      return threeAvailable;
+    })
+    .catch(err => {
       threeLoading = false;
-      setEngineStatus('3Dエンジンを読み込めませんでした。インターネット接続を確認してください。');
-      resolve(false);
-    };
-    document.head.appendChild(script);
-  });
+      threeInitError = err;
+      const detail = err && err.message ? ` (${err.message})` : '';
+      setEngineStatus('3Dエンジンを読み込めませんでした。' + detail);
+      return false;
+    });
   return threeLoadPromise;
 }
 
@@ -1245,7 +1247,7 @@ async function setRenderEngine(mode) {
         b.classList.toggle('active', active);
         b.setAttribute('aria-pressed', active ? 'true' : 'false');
       });
-      setEngineStatus('3Dを初期化できませんでした。2Dで表示しています。');
+      setEngineStatus('3Dを初期化できませんでした。2Dで表示しています。' + (threeInitError?.message ? ` [${threeInitError.message}]` : ''));
       render();
       return;
     }
@@ -1263,6 +1265,15 @@ renderEngineBtns.forEach(btn => btn.addEventListener('click', () => {
   const mode = btn.dataset.engine;
   setRenderEngine(mode);
 }));
+
+// Initial state: 2D is active and the 3D button remains a normal, clickable control.
+renderEngineBtns.forEach(b => {
+  const active = b.dataset.engine === '2d';
+  b.classList.toggle('active', active);
+  b.setAttribute('aria-pressed', active ? 'true' : 'false');
+});
+document.body.classList.add('woven-2d');
+
 
 function makeThreeTexture(source) {
   const tex = new THREE.CanvasTexture(source);

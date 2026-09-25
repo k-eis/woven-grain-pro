@@ -1,18 +1,8 @@
-Woven Grain Pro v8.2 — Deep Navy × Silver
+Woven Grain Pro v8.4 — Deep Navy × Silver
 
-This build keeps the v8.1 3D button fix and applies the selected Pro interface palette:
-Deep Navy × Silver.
-
-Palette:
-- Background: #18232D
-- Ink: #E5E9EB
-- Line: #34424D
-- Strong line: #52616D
-- Accent: #AEB7C0
-- Muted: #91A0AB
-
-The previous Sarashi/Touki theme switcher was removed so Pro has one consistent visual identity.
-
-Files:
-- index(1).html
-- woven-grain.js
+Fixes:
+- Three.js now loads as an ES module instead of relying on the removed/legacy global build.
+- 2D is explicitly active on startup.
+- 3D button keeps normal clickable styling and is never disabled/whitened during loading.
+- WebGL/Three initialization errors are surfaced in the status line.
+- Deep Navy × Silver UI preserved.
