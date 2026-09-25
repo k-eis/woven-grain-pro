@@ -282,10 +282,10 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
       <div class="ctrl-group">
         <div class="ctrl-label"><span class="name">RENDER ENGINE <span class="jp-small">描画方式</span></span></div>
         <div class="select-grid" id="renderEngineOptions" style="grid-template-columns:1fr 1fr;">
-          <div class="select-btn" data-engine="2d">2D</div>
-          <div class="select-btn active" data-engine="3d">3D</div>
+          <button type="button" class="select-btn" data-engine="2d">2D</button>
+          <button type="button" class="select-btn" data-engine="3d">3D</button>
         </div>
-        <div style="font:400 9px/1.5 var(--mono); color:var(--muted); margin-top:8px;">
+        <div id="engineStatus" style="font:400 9px/1.5 var(--mono); color:var(--muted); margin-top:8px;">
           3DはGPUを使った軽量な立体編み込み。スマートフォンでは自動的に低負荷設定になります。
         </div>
       </div>
@@ -467,7 +467,7 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius
   <div class="closeBtn" id="saveOverlayClose">閉じる</div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.min.js"></script>
+<script id="threeScript" src="https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.min.js"></script>
 <script src="woven-grain.js"></script>
 </body>
 </html>

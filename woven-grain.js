@@ -1181,25 +1181,67 @@ updateAnimationUI();
 
 const webglCanvas = document.getElementById('webglCanvas');
 const renderEngineBtns = document.querySelectorAll('[data-engine]');
-let renderEngine = '3d';
+const engineStatus = document.getElementById('engineStatus');
+let renderEngine = '2d';
 let threeState = null;
 let threeAvailable = false;
+let threeLoading = false;
+let threeLoadPromise = null;
+
+function setEngineStatus(message) {
+  if (engineStatus) engineStatus.textContent = message;
+}
+
+function loadThreeLibrary() {
+  if (window.THREE) return Promise.resolve(true);
+  if (threeLoadPromise) return threeLoadPromise;
+  threeLoading = true;
+  setEngineStatus('3Dエンジンを読み込んでいます…');
+  threeLoadPromise = new Promise(resolve => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.min.js';
+    script.async = true;
+    script.onload = () => {
+      threeLoading = false;
+      threeAvailable = !!window.THREE && !!initThree();
+      resolve(threeAvailable);
+    };
+    script.onerror = () => {
+      threeLoading = false;
+      setEngineStatus('3Dエンジンを読み込めませんでした。インターネット接続を確認してください。');
+      resolve(false);
+    };
+    document.head.appendChild(script);
+  });
+  return threeLoadPromise;
+}
 
 function isMobileDevice() {
   return window.matchMedia && window.matchMedia('(max-width: 860px)').matches;
 }
 
-function setRenderEngine(mode) {
-  if (mode === '3d' && !threeAvailable) mode = '2d';
+async function setRenderEngine(mode) {
+  if (mode === '3d' && !threeAvailable) {
+    if (threeLoading) return;
+    const ok = await loadThreeLibrary();
+    if (!ok) {
+      setRenderEngine('2d');
+      return;
+    }
+  }
   renderEngine = mode;
   document.body.classList.toggle('woven-3d', mode === '3d');
   document.body.classList.toggle('woven-2d', mode === '2d');
   renderEngineBtns.forEach(b => b.classList.toggle('active', b.dataset.engine === mode));
   if (threeState && mode === '3d') resizeThree();
+  setEngineStatus(mode === '3d' ? '3D TRUE WEAVE — GPU立体処理' : '2D — 軽量レンダリング');
   render();
 }
 
-renderEngineBtns.forEach(btn => btn.addEventListener('click', () => setRenderEngine(btn.dataset.engine)));
+renderEngineBtns.forEach(btn => btn.addEventListener('click', () => {
+  const mode = btn.dataset.engine;
+  setRenderEngine(mode);
+}));
 
 function makeThreeTexture(source) {
   const tex = new THREE.CanvasTexture(source);
@@ -1581,11 +1623,14 @@ function downloadCurrentRender() {
 downloadBtn.addEventListener('click', downloadCurrentRender);
 
 threeAvailable = !!initThree();
-if (!threeAvailable) {
+if (threeAvailable) {
+  setRenderEngine('3d');
+} else {
   renderEngine = '2d';
   document.body.classList.add('woven-2d');
+  renderEngineBtns.forEach(b => b.classList.toggle('active', b.dataset.engine === '2d'));
+  setEngineStatus('2Dで起動中。3Dボタンを押すと3Dエンジンを読み込みます。');
 }
-setRenderEngine(renderEngine);
 
 window.addEventListener('resize', () => {
   if (renderEngine === '3d') {
