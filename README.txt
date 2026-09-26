@@ -1,8 +1,10 @@
-Woven Grain Pro v8.4 — Deep Navy × Silver
+Woven Grain Pro — 3D Relief v7
 
-Fixes:
-- Three.js now loads as an ES module instead of relying on the removed/legacy global build.
-- 2D is explicitly active on startup.
-- 3D button keeps normal clickable styling and is never disabled/whitened during loading.
-- WebGL/Three initialization errors are surfaced in the status line.
-- Deep Navy × Silver UI preserved.
+Update:
+- WEAVE DEPTH now directly and visibly drives strand relief strength.
+- SHADOW REACH now directly controls contact-shadow length and edge-shadow spread.
+- LIGHT DIRECTION now controls the actual side from which highlights/shadows appear.
+- LIGHT INTENSITY is coupled into relief and edge lighting.
+- Existing STRAND PROFILE, Diagonal, iPhone preview fixes, and A/B controls are preserved.
+
+The 3D treatment remains Canvas 2D/mobile-friendly, but the three parameters above now have deliberately stronger, more direct visual responses.
